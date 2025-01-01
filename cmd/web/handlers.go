@@ -33,9 +33,16 @@ type loginRequest struct {
     Password string `json:"password" binding:"required"`
 }
 
+func (app *application) getProjectsHandler(c *gin.Context){
+	projects, err := app.database_handler.GetProjects()
+	if err != nil{
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Не удалось получить проекты"})
+		return
+	}
+	c.JSON(http.StatusOK, projects)
+}
+
 func (app *application)createProjectHandler(c *gin.Context) {
-	
-	// Парсинг данных проекта из запроса
 	var project Project
 	if err := c.ShouldBindJSON(&project); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request data"})

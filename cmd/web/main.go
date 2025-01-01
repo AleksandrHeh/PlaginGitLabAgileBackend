@@ -75,7 +75,9 @@ func (app *application) routes() *gin.Engine {
     // маршруты
     router.POST("/api/login", app.loginHandler)
 	router.GET("/api/users", app.getUsersHandler)
-	router.POST("/api/projects", app.createProjectHandler)
+	router.POST("/api/createProject", app.createProjectHandler)
+	router.GET("/api/viewProjects", app.getProjectsHandler)
+
 
 
     return router

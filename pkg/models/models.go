@@ -1,7 +1,9 @@
 package models
 
 import (
+	"database/sql"
 	"errors"
+	"time"
 )
 
 var ErrNoRecord = errors.New("models: подходящей записи не найдено!")
@@ -15,4 +17,14 @@ type User struct {
     UsrName      string `db:"usr_name"`       // Имя пользователя
     UsrPatronomic string `db:"usr_patronomic"`// Отчество пользователя
     UsrSurname   string `db:"usr_surname"`    // Фамилия пользователя
+}
+
+type Project struct {
+    PrjID int `db:"prj_id"` 
+    PrjTitle string `db:"prj_title"`
+    PrjDescription string `db:"prj_description"`
+    PrjStartDate time.Time `db:"prj_start_date"`
+    PrjEndDate time.Time `db:"prj_end_date"`
+    PrjStatus sql.NullInt32 `db:"prj_status"`
+    PrjOwner string `db:"prj_owner"`
 }
