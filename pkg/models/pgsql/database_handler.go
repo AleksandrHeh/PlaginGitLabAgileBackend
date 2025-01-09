@@ -62,10 +62,10 @@ func (pl *PullIncludes) GetUsers() ([]models.User, error) {
 	return users, nil
 }
 
-func (pl *PullIncludes) CreateProject(name, description, startDate, endDate string, ownerID int) (int, error) {
+func (pl *PullIncludes) CreateProject(name, description, startDate, endDate, prj_status string, ownerID int) (int, error) {
 	var projectID int
-	query := "INSERT INTO projects (prj_title, prj_description, prj_start_date, prj_end_date, prj_owner) VALUES ($1, $2, $3, $4, $5) RETURNING prj_id"
-	err := pl.DB.QueryRow(context.Background(), query, name, description, startDate, endDate, ownerID).Scan(&projectID)
+	query := "INSERT INTO projects (prj_title, prj_description, prj_start_date, prj_end_date, prj_status, prj_owner) VALUES ($1, $2, $3, $4, $5, $6) RETURNING prj_id"
+	err := pl.DB.QueryRow(context.Background(), query, name, description, startDate, endDate, prj_status, ownerID).Scan(&projectID)
 	if err != nil {
 		return projectID, fmt.Errorf("Failed to insert project: %w", err)
 	}
@@ -82,6 +82,25 @@ func (pl *PullIncludes) GetUser(user_id string) (string, error) {
     }
     return SurnameNamePatronomic, nil
 }
+
+func (pl *PullIncludes) UpdateProject(prj_title, prj_description, prj_start_date, prj_end_date string,  prj_id int) (error){
+    query := "UPDATE projects SET prj_title = $1, prj_description = $2, prj_start_date = $3, prj_end_date = $4 WHERE prj_id = $5;"
+    _, err := pl.DB.Exec(context.Background(), query, prj_title, prj_description, prj_start_date, prj_end_date, prj_id)
+    if err != nil {
+        return fmt.Errorf("не удалось изменить проект: %w", err)
+    }
+    return nil
+}
+
+func (pl *PullIncludes) DeleteProject(prj_id int) error {
+	query := "DELETE FROM projects WHERE prj_id = $1"
+	_, err := pl.DB.Exec(context.Background(), query, prj_id)
+	if err != nil {
+		return fmt.Errorf("Не удалось удалить проект: %w", err)
+	}
+	return err
+}
+
 
 // prj_id, prj_title, prj_description, prj_start_date, prj_end_date string, prj_status, prj_owner
 func (pl *PullIncludes) GetProjects() ([]models.Project, error) {
@@ -110,6 +129,7 @@ func (pl *PullIncludes) GetProjects() ([]models.Project, error) {
 			return nil, errors.New("Ошибка обработки данных")
 		}
 		
+		fmt.Printf(project.PrjTitle)
 
         ownerSurnameNamePatronomic, err := pl.GetUser(project.PrjOwner)
         if err != nil {
@@ -138,3 +158,4 @@ func (pl *PullIncludes) AddUsersProjects(projectID, userID int) error {
 	}
 	return nil
 }
+

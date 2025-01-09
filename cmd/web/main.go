@@ -57,29 +57,28 @@ func openDB(dsn string) (*pgxpool.Pool, error) {
 }
 
 func (app *application) routes() *gin.Engine {
-    router := gin.Default()
+	router := gin.Default()
 
-    // Настройка CORS
-    router.Use(func(c *gin.Context) {
-        c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+	// Настройка CORS
+	router.Use(func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        if c.Request.Method == "OPTIONS" {
-            c.AbortWithStatus(204) // Если preflight-запрос, просто вернуть 204
-            return
-        }
-        c.Next()
-    })
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204) // Если preflight-запрос, просто вернуть 204
+			return
+		}
+		c.Next()
+	})
 
-    // маршруты
-    router.POST("/api/login", app.loginHandler)
+	// маршруты
+	router.POST("/api/login", app.loginHandler)
 	router.GET("/api/users", app.getUsersHandler)
 	router.POST("/api/createProject", app.createProjectHandler)
 	router.GET("/api/viewProjects", app.getProjectsHandler)
+	router.PUT("/api/updateProject", app.updateProjectHandler)
+	router.DELETE("/api/deleteProject/:id", app.deleteProjectHandler)
 
-
-
-    return router
+	return router
 }
-

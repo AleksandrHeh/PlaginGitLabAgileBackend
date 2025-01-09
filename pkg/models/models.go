@@ -1,7 +1,7 @@
 package models
 
 import (
-	"database/sql"
+
 	"errors"
 	"time"
 )
@@ -25,6 +25,6 @@ type Project struct {
     PrjDescription string `db:"prj_description"`
     PrjStartDate time.Time `db:"prj_start_date"`
     PrjEndDate time.Time `db:"prj_end_date"`
-    PrjStatus sql.NullInt32 `db:"prj_status"`
+    PrjStatus string `db:"prj_status"`
     PrjOwner string `db:"prj_owner"`
 }
