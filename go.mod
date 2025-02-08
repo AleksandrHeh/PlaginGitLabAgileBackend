@@ -10,6 +10,8 @@ require (
 	github.com/jackc/pgx/v5 v5.7.1
 )
 
+require golang.org/x/oauth2 v0.26.0 // indirect
+
 require (
 	github.com/bytedance/sonic v1.12.3 // indirect
 	github.com/bytedance/sonic/loader v0.2.1 // indirect

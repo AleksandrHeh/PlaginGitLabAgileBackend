@@ -28,3 +28,14 @@ type Project struct {
     PrjStatus string `db:"prj_status"`
     PrjOwner string `db:"prj_owner"`
 }
+
+type Tasks struct{
+    TskId int `db:"tsk_id"`
+    TskPrjId int `db:"tsk_prj_id"`
+    TskTitle string `db:"tsk_title"`
+    TskDescription string `db:"tsk_description"`
+    TskPriority string `db:"tsk_priority"`
+    TskStatus string `db:"tsk_status"`
+    TskAssigneId string `db:"tsk_assigne_id"`
+
+}

@@ -22,6 +22,15 @@ type Project struct {
 	OwnerID      int    `json:"ownerID"`
 }
 
+type Task struct {
+	ID int `json:"id"`
+    TskPrjId int `json:"tsk_prj_id"`
+    Title string `json:"title"`
+    Description string `json:"description"`
+    Priority string `json:"priority"`
+    Status string `json:"status"`
+    AssigneId string `json:"tsk_assigne_id"`
+}
 
 type Claims struct {
 	UserID   int    `json:"id"`
@@ -43,38 +52,6 @@ func (app *application) getProjectsHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, projects)
-}
-
-func (app *application) createProjectHandler(c *gin.Context) {
-	var project Project
-	if err := c.ShouldBindJSON(&project); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request data"})
-		return
-	}
-
-	var projectID int
-	prj_status := "Активный"
-	projectID, err := app.database_handler.CreateProject(project.Title, project.Description, project.StartDate, project.EndDate, prj_status, project.OwnerID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create project"})
-		return
-	}
-
-	for _, participant := range project.Participants {
-		fmt.Print("dd")
-		fmt.Println(participant)
-	}
-	// Добавление участников в проект
-	for _, participantID := range project.Participants {
-		err := app.database_handler.AddUsersProjects(projectID, participantID)
-		fmt.Print("ds")
-		fmt.Println(participantID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to add participant %d", participantID)})
-			return
-		}
-	}
-	c.JSON(http.StatusOK, gin.H{"message": "Project created successfully"})
 }
 
 func (app *application) updateProjectHandler(c *gin.Context) {
@@ -108,6 +85,17 @@ func (app *application) deleteProjectHandler(c *gin.Context) {
         return
     }
     c.JSON(http.StatusOK, gin.H{"message": "Проект успешно удален"})
+}
+
+func (app *application) getProjectHandler(c *gin.Context) {
+    prj_id_str := c.Param("id")
+    prj_id, _ := strconv.Atoi(prj_id_str)
+    project, err := app.database_handler.GetProject(prj_id)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Не удалось получить проект"})
+        return
+    }
+    c.JSON(http.StatusOK, project)
 }
 
 func (app *application) loginHandler(c *gin.Context) {
@@ -158,4 +146,58 @@ func (app *application) getUsersHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, users)
+}
+
+func (app *application) createTaskHandler(c *gin.Context){
+	var task Task
+	fmt.Print("fdf")
+	if err := c.ShouldBindJSON(&task); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request data"})
+		return
+	}
+	fmt.Print("fd1f")
+
+	task.Status = "Новая"
+
+	err := app.database_handler.CreateTask(task.TskPrjId, task.Title, task.Description, task.Priority, task.Status)
+	fmt.Print("task")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create project"})
+		fmt.Print(err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Task created successfully"})
+}
+
+func (app *application) createProjectHandler(c *gin.Context) {
+	var project Project
+	if err := c.ShouldBindJSON(&project); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request data"})
+		return
+	}
+
+	var projectID int
+	prj_status := "Активный"
+	projectID, err := app.database_handler.CreateProject(project.Title, project.Description, project.StartDate, project.EndDate, prj_status, project.OwnerID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create project"})
+		return
+	}
+
+	for _, participant := range project.Participants {
+		fmt.Print("dd")
+		fmt.Println(participant)
+	}
+	// Добавление участников в проект
+	for _, participantID := range project.Participants {
+		err := app.database_handler.AddUsersProjects(projectID, participantID)
+		fmt.Print("ds")
+		fmt.Println(participantID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to add participant %d", participantID)})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Project created successfully"})
 }

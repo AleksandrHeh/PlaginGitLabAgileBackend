@@ -101,6 +101,16 @@ func (pl *PullIncludes) DeleteProject(prj_id int) error {
 	return err
 }
 
+func (pl *PullIncludes) GetProject(prj_id int) (models.Project, error) {
+	var project models.Project
+	query := "SELECT prj_title, prj_description, prj_start_date, prj_end_date, prj_status, prj_owner FROM projects WHERE prj_id = $1"
+	err := pl.DB.QueryRow(context.Background(), query, prj_id).Scan(
+		&project.PrjTitle, &project.PrjDescription, &project.PrjStartDate, &project.PrjEndDate, &project.PrjStatus, &project.PrjOwner)
+	if err != nil {
+		return models.Project{}, fmt.Errorf("не удалось получить данные проекта: %v", err)
+	}
+	return project, nil
+}
 
 // prj_id, prj_title, prj_description, prj_start_date, prj_end_date string, prj_status, prj_owner
 func (pl *PullIncludes) GetProjects() ([]models.Project, error) {
@@ -148,6 +158,15 @@ func (pl *PullIncludes) GetProjects() ([]models.Project, error) {
 	}
 
 	return projects, nil
+}
+
+func (pl *PullIncludes) CreateTask(tsk_prj_id int, tsk_title, tsk_description, tsk_priority, tsk_status string) error{
+	query := "INSERT INTO tasks (tsk_prj_id, tsk_title, tsk_description, tsk_priority, tsk_status) VALUES ($1, $2, $3, $4, $5)"
+	_, err := pl.DB.Exec(context.Background(), query, tsk_prj_id, tsk_title, tsk_description, tsk_priority, tsk_status)
+	if err != nil {
+		return fmt.Errorf("Failef to add task to project: %w", err)
+	}
+	return nil
 }
 
 func (pl *PullIncludes) AddUsersProjects(projectID, userID int) error {

@@ -79,6 +79,8 @@ func (app *application) routes() *gin.Engine {
 	router.GET("/api/viewProjects", app.getProjectsHandler)
 	router.PUT("/api/updateProject", app.updateProjectHandler)
 	router.DELETE("/api/deleteProject/:id", app.deleteProjectHandler)
+	router.GET("/api/viewProject/:id", app.getProjectHandler)
+	router.POST("/api/createTask", app.createTaskHandler)
 
 	return router
 }
