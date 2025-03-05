@@ -87,6 +87,23 @@ func (app *application) deleteProjectHandler(c *gin.Context) {
     c.JSON(http.StatusOK, gin.H{"message": "Проект успешно удален"})
 }
 
+func (app *application) deleteTaskHandler(c *gin.Context) {
+    tsk_id_str := c.Param("id")
+    tsk_id, err := strconv.Atoi(tsk_id_str)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"message": "Неверный ID задачи"})
+        return
+    }
+
+    err = app.database_handler.DeleteTask(tsk_id)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"message": "Ошибка удаления задачи: " + err.Error()})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{"message": "Задача успешно удалена"})
+}
+
 func (app *application) getProjectHandler(c *gin.Context) {
     prj_id_str := c.Param("id")
     prj_id, _ := strconv.Atoi(prj_id_str)
@@ -101,7 +118,7 @@ func (app *application) getProjectHandler(c *gin.Context) {
 func (app *application) loginHandler(c *gin.Context) {
 	var req loginRequest
 
-	// Привязка данных JSON к структуре
+
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
 		return
@@ -109,7 +126,6 @@ func (app *application) loginHandler(c *gin.Context) {
 
 	log.Printf("Login attempt with username: %s", req.Username)
 
-	// Проверка пользователя в базе данных
 	user, err := app.database_handler.IsValidUser(req.Username, req.Password)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
@@ -148,10 +164,20 @@ func (app *application) getUsersHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, users)
 }
 
+type Task2 struct {
+    TskPrjId int `json:"tsk_prj_id"`
+    Title string `json:"title"`
+    Description string `json:"description"`
+    Priority string `json:"priority"`
+    Status string `json:"status"`
+
+}
+
 func (app *application) createTaskHandler(c *gin.Context){
-	var task Task
-	fmt.Print("fdf")
+	var task Task2
+	fmt.Println("fdf")
 	if err := c.ShouldBindJSON(&task); err != nil {
+		fmt.Println(task)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request data"})
 		return
 	}
@@ -168,6 +194,30 @@ func (app *application) createTaskHandler(c *gin.Context){
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Task created successfully"})
+}
+
+func (app *application) getTasksHandler(c *gin.Context) {
+    projectID := c.Param("id")
+    if projectID == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "ID проекта не указан"})
+        return
+    }
+	fmt.Print("dfdfd2")
+    tskPrjID, err := strconv.Atoi(projectID)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID проекта"})
+        return
+    }
+	fmt.Print("dfdfd3")
+
+    tasks, err := app.database_handler.GetTasksProject(tskPrjID)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Не удалось получить задачи"})
+        return
+    }
+	fmt.Print("dfdfd4")
+
+    c.JSON(http.StatusOK, tasks)
 }
 
 func (app *application) createProjectHandler(c *gin.Context) {

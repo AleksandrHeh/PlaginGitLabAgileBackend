@@ -36,6 +36,6 @@ type Tasks struct{
     TskDescription string `db:"tsk_description"`
     TskPriority string `db:"tsk_priority"`
     TskStatus string `db:"tsk_status"`
-    TskAssigneId string `db:"tsk_assigne_id"`
+    TskAssigneId *string `db:"tsk_assignee_id"`
 
 }

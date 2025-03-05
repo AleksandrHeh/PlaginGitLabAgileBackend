@@ -92,15 +92,6 @@ func (pl *PullIncludes) UpdateProject(prj_title, prj_description, prj_start_date
     return nil
 }
 
-func (pl *PullIncludes) DeleteProject(prj_id int) error {
-	query := "DELETE FROM projects WHERE prj_id = $1"
-	_, err := pl.DB.Exec(context.Background(), query, prj_id)
-	if err != nil {
-		return fmt.Errorf("Не удалось удалить проект: %w", err)
-	}
-	return err
-}
-
 func (pl *PullIncludes) GetProject(prj_id int) (models.Project, error) {
 	var project models.Project
 	query := "SELECT prj_title, prj_description, prj_start_date, prj_end_date, prj_status, prj_owner FROM projects WHERE prj_id = $1"
@@ -150,8 +141,6 @@ func (pl *PullIncludes) GetProjects() ([]models.Project, error) {
         projects = append(projects, project)
 	}
 
-    
-	// Проверка на ошибки после завершения итерации
 	if rows.Err() != nil {
 		log.Println("Ошибка после обработки строк:", rows.Err())
 		return nil, errors.New("Ошибка обработки данных после чтения")
@@ -178,3 +167,57 @@ func (pl *PullIncludes) AddUsersProjects(projectID, userID int) error {
 	return nil
 }
 
+func (pl *PullIncludes) GetTasksProject(tsk_prj_id int) ([]models.Tasks, error){
+	fmt.Print("dfdfd")
+	query := "SELECT tsk_id, tsk_prj_id, tsk_title, tsk_description, tsk_priority, tsk_status, tsk_assignee_id FROM tasks WHERE tsk_prj_id = $1"
+	rows, err := pl.DB.Query(context.Background(), query, tsk_prj_id)
+	if err != nil {
+		log.Println("Ошибка выполнения запроса:", err)
+		return nil, errors.New("Не удалось выполнить запрос к базе данных")
+	}
+	defer rows.Close()
+	fmt.Println("fffffff3")
+	var tasks []models.Tasks
+	for rows.Next(){
+		var task models.Tasks
+		err := rows.Scan(
+			&task.TskId,
+			&task.TskPrjId,
+			&task.TskTitle,
+			&task.TskDescription,
+			&task.TskPriority,
+			&task.TskStatus,
+			&task.TskAssigneId,
+		)
+		if err != nil {
+			log.Println("Ошибка чтения строки:", err)
+			return nil, errors.New("Ошибка обработки данных")
+		}
+		tasks = append(tasks,task)
+	} 
+	
+
+	if rows.Err() != nil {
+		log.Println("Ошибка после обработки строк:", rows.Err())
+		return nil, errors.New("Ошибка обработки данных после чтения")
+	}
+	return tasks, nil
+}
+
+func (pl *PullIncludes) DeleteProject(prj_id int) error {
+	query := "DELETE FROM projects WHERE prj_id = $1"
+	_, err := pl.DB.Exec(context.Background(), query, prj_id)
+	if err != nil {
+		return fmt.Errorf("Не удалось удалить проект: %w", err)
+	}
+	return err
+}
+
+func (pl *PullIncludes) DeleteTask(tsk_id int) error {
+    query := "DELETE FROM tasks WHERE tsk_id = $1"
+    _, err := pl.DB.Exec(context.Background(), query, tsk_id)
+    if err != nil {
+        return fmt.Errorf("не удалось удалить задачу: %w", err)
+    }
+    return nil
+}
