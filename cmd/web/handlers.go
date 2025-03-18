@@ -1,253 +1,167 @@
 package main
 
 import (
-	"fmt"
-	"log"
-	"net/http"
-	"strconv"
-	"time"
+    "encoding/json"
+    "fmt"
+    "io/ioutil"
+    "net/http"
+    "net/url"
 
-	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
+    "github.com/gin-gonic/gin"
 )
 
-type Project struct {
-	ID           string `json:"id"`
-	Title        string `json:"title"`
-	Description  string `json:"description"`
-	StartDate    string `json:"start_date"`
-	EndDate      string `json:"end_date"`
-	Status 		 string `json:"status"`
-	Participants []int  `json:"participants"`
-	OwnerID      int    `json:"ownerID"`
+type GitLabUser struct {
+    ID       int    `json:"id"`
+    Username string `json:"username"`
+    Name     string `json:"name"`
+    Email    string `json:"email"`
 }
 
-type Task struct {
-	ID int `json:"id"`
-    TskPrjId int `json:"tsk_prj_id"`
-    Title string `json:"title"`
-    Description string `json:"description"`
-    Priority string `json:"priority"`
-    Status string `json:"status"`
-    AssigneId string `json:"tsk_assigne_id"`
+type OAuthHandler struct {
+    clientID     string
+    clientSecret string
+    redirectURI  string
+    gitlabBaseURL string // Базовый URL для локального GitLab
 }
 
-type Claims struct {
-	UserID   int    `json:"id"`
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	UserRole string `json:"role"`
-	jwt.RegisteredClaims
+func (h *OAuthHandler) GitLabAuthHandler(c *gin.Context) {
+    authURL := fmt.Sprintf(
+        "%s/oauth/authorize?client_id=%s&redirect_uri=%s&response_type=code&scope=api+read_api",
+        h.gitlabBaseURL, h.clientID, url.QueryEscape(h.redirectURI),
+    )
+    fmt.Println("Redirect URI:", authURL)
+    c.Redirect(http.StatusTemporaryRedirect, authURL)
 }
 
-type loginRequest struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"`
-}
+func (h *OAuthHandler) GitLabCallbackHandler(c *gin.Context) {
+    code := c.Query("code")
+    if code == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Authorization code is missing"})
+        return
+    }
 
-func (app *application) getProjectsHandler(c *gin.Context) {
-	projects, err := app.database_handler.GetProjects()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Не удалось получить проекты"})
-		return
-	}
-	c.JSON(http.StatusOK, projects)
-}
+    tokenURL := fmt.Sprintf("%s/oauth/token", h.gitlabBaseURL)
+    formData := url.Values{
+        "client_id":     {h.clientID},
+        "client_secret": {h.clientSecret},
+        "code":          {code},
+        "grant_type":    {"authorization_code"},
+        "redirect_uri":  {h.redirectURI},
+    }
 
-func (app *application) updateProjectHandler(c *gin.Context) {
-	var Project struct {
-		ID          int `json:"id"`
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		StartDate   string `json:"start_date"`
-		EndDate     string `json:"end_date"`
-	}
-	if err := c.ShouldBindJSON(&Project);err != nil {
-		fmt.Printf("Error updating project: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update project", "details": err.Error()})
-		return
-	}
-
-	err := app.database_handler.UpdateProject(Project.Title, Project.Description, Project.StartDate, Project.EndDate, Project.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Filed to update project"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"message": "Project inserted successfully"})
-}
-
-func (app *application) deleteProjectHandler(c *gin.Context) {
-    prj_id_str := c.Param("id")
-    prj_id, _ := strconv.Atoi(prj_id_str)
-    err := app.database_handler.DeleteProject(prj_id)
+    resp, err := http.PostForm(tokenURL, formData)
     if err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": "Ошибка удаления проекта!"})
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to exchange code for token"})
         return
     }
-    c.JSON(http.StatusOK, gin.H{"message": "Проект успешно удален"})
-}
+    defer resp.Body.Close()
 
-func (app *application) deleteTaskHandler(c *gin.Context) {
-    tsk_id_str := c.Param("id")
-    tsk_id, err := strconv.Atoi(tsk_id_str)
+    body, err := ioutil.ReadAll(resp.Body)
     if err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"message": "Неверный ID задачи"})
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
         return
     }
 
-    err = app.database_handler.DeleteTask(tsk_id)
+    var tokenResponse struct {
+        AccessToken string `json:"access_token"`
+    }
+    if err := json.Unmarshal(body, &tokenResponse); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse token response"})
+        return
+    }
+
+    user, err := h.authenticateWithGitLab(tokenResponse.AccessToken)
     if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"message": "Ошибка удаления задачи: " + err.Error()})
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "Failed to authenticate with GitLab"})
         return
     }
 
-    c.JSON(http.StatusOK, gin.H{"message": "Задача успешно удалена"})
+    // Возвращаем данные пользователя и URL для перенаправления
+    c.JSON(http.StatusOK, gin.H{
+        "user":        user,
+		"token":       tokenResponse.AccessToken,
+        "redirectURL": "/home", // Указываем, куда перенаправить пользователя
+    })
 }
+func (h *OAuthHandler) authenticateWithGitLab(token string) (*GitLabUser, error) {
+    url := fmt.Sprintf("%s/api/v4/user", h.gitlabBaseURL)
 
-func (app *application) getProjectHandler(c *gin.Context) {
-    prj_id_str := c.Param("id")
-    prj_id, _ := strconv.Atoi(prj_id_str)
-    project, err := app.database_handler.GetProject(prj_id)
+    req, err := http.NewRequest("GET", url, nil)
     if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "Не удалось получить проект"})
-        return
+        return nil, err
     }
-    c.JSON(http.StatusOK, project)
-}
 
-func (app *application) loginHandler(c *gin.Context) {
-	var req loginRequest
+    req.Header.Set("Authorization", "Bearer "+token)
 
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
-		return
-	}
-
-	log.Printf("Login attempt with username: %s", req.Username)
-
-	user, err := app.database_handler.IsValidUser(req.Username, req.Password)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
-		return
-	}
-
-	log.Printf("Login attempt with username: %s", user.UsrRole)
-
-	expirationTime := time.Now().Add(1 * time.Hour)
-	claims := &Claims{
-		UserID:   user.UsrID,
-		Username: req.Username,
-		Email:    user.UsrEmail,
-		UserRole: user.UsrRole,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(expirationTime),
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte("S3krETB2LUY4dm1WME5YYQ=="))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not create token"})
-		return
-	}
-	// Успешный вход
-	c.JSON(http.StatusOK, gin.H{"message": "Login successful", "user": user, "token": tokenString})
-}
-
-func (app *application) getUsersHandler(c *gin.Context) {
-	users, err := app.database_handler.GetUsers()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Не удалось получить пользователей"})
-		return
-	}
-	c.JSON(http.StatusOK, users)
-}
-
-type Task2 struct {
-    TskPrjId int `json:"tsk_prj_id"`
-    Title string `json:"title"`
-    Description string `json:"description"`
-    Priority string `json:"priority"`
-    Status string `json:"status"`
-
-}
-
-func (app *application) createTaskHandler(c *gin.Context){
-	var task Task2
-	fmt.Println("fdf")
-	if err := c.ShouldBindJSON(&task); err != nil {
-		fmt.Println(task)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request data"})
-		return
-	}
-	fmt.Print("fd1f")
-
-	task.Status = "Новая"
-
-	err := app.database_handler.CreateTask(task.TskPrjId, task.Title, task.Description, task.Priority, task.Status)
-	fmt.Print("task")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create project"})
-		fmt.Print(err)
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Task created successfully"})
-}
-
-func (app *application) getTasksHandler(c *gin.Context) {
-    projectID := c.Param("id")
-    if projectID == "" {
-        c.JSON(http.StatusBadRequest, gin.H{"error": "ID проекта не указан"})
-        return
-    }
-	fmt.Print("dfdfd2")
-    tskPrjID, err := strconv.Atoi(projectID)
+    client := &http.Client{}
+    resp, err := client.Do(req)
     if err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID проекта"})
-        return
+        return nil, err
     }
-	fmt.Print("dfdfd3")
+    defer resp.Body.Close()
 
-    tasks, err := app.database_handler.GetTasksProject(tskPrjID)
+    if resp.StatusCode != http.StatusOK {
+        return nil, fmt.Errorf("ошибка аутентификации: %s", resp.Status)
+    }
+
+    body, err := ioutil.ReadAll(resp.Body)
     if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "Не удалось получить задачи"})
-        return
+        return nil, err
     }
-	fmt.Print("dfdfd4")
 
-    c.JSON(http.StatusOK, tasks)
+    var user GitLabUser
+    err = json.Unmarshal(body, &user)
+    if err != nil {
+        return nil, err
+    }
+
+    return &user, nil
 }
 
-func (app *application) createProjectHandler(c *gin.Context) {
-	var project Project
-	if err := c.ShouldBindJSON(&project); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request data"})
-		return
-	}
+func (h *OAuthHandler) GitLabProjectsHandler(c *gin.Context) {
+    token := c.GetHeader("Authorization")
+    if token == "" {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "Токен отсутствует"})
+        return
+    }
 
-	var projectID int
-	prj_status := "Активный"
-	projectID, err := app.database_handler.CreateProject(project.Title, project.Description, project.StartDate, project.EndDate, prj_status, project.OwnerID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create project"})
-		return
-	}
+    url := fmt.Sprintf("%s/api/v4/projects", h.gitlabBaseURL)
+    req, err := http.NewRequest("GET", url, nil)
+    req.Header.Set("Authorization", token)
 
-	for _, participant := range project.Participants {
-		fmt.Print("dd")
-		fmt.Println(participant)
-	}
-	// Добавление участников в проект
-	for _, participantID := range project.Participants {
-		err := app.database_handler.AddUsersProjects(projectID, participantID)
-		fmt.Print("ds")
-		fmt.Println(participantID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to add participant %d", participantID)})
-			return
-		}
-	}
-	c.JSON(http.StatusOK, gin.H{"message": "Project created successfully"})
+    client := &http.Client{}
+    resp, err := client.Do(req)
+    if err != nil {
+        fmt.Println("Ошибка запроса к GitLab:", err)
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка запроса к GitLab"})
+        return
+    }
+    defer resp.Body.Close()
+
+    body, err := ioutil.ReadAll(resp.Body)
+    if err != nil {
+        fmt.Println("Ошибка чтения ответа:", err)
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка чтения ответа"})
+        return
+    }
+
+    // Проверяем, является ли ответ ошибкой
+    var errorResponse map[string]interface{}
+    if err := json.Unmarshal(body, &errorResponse); err == nil {
+        if _, exists := errorResponse["error"]; exists {
+            fmt.Println("Ошибка от GitLab:", errorResponse)
+            c.JSON(http.StatusForbidden, gin.H{"error": errorResponse["error"]})
+            return
+        }
+    }
+
+    // Парсим данные как массив проектов
+    var projects []map[string]interface{}
+    if err := json.Unmarshal(body, &projects); err != nil {
+        fmt.Println("Ошибка парсинга данных:", err)
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка парсинга данных"})
+        return
+    }
+
+    c.JSON(http.StatusOK, projects)
 }

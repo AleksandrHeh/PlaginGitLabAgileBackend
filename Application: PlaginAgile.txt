@@ -1,0 +1,11 @@
+9feaef0a6c56d9765985fa701db9c1dfd332389c865c44baa94b916d6b080712
+gloas-7f520ccb8b6cced1f974d257907e244c285c1fd25030b21fb436b1b3d936393a
+
+Callback URL	
+http://localhost:4000/api/gitlab/callback
+Trusted	Yes
+Confidential	Yes
+Scopes	
+api (Access the API on your behalf)
+read_api (Read Api)
+read_user (Read your personal information)
