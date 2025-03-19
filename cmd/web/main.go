@@ -84,6 +84,8 @@ func (app *application) routes() *gin.Engine {
     router.GET("/api/gitlab/auth", app.oauthHandler.GitLabAuthHandler)
     router.GET("/api/gitlab/callback", app.oauthHandler.GitLabCallbackHandler)
 	router.GET("/api/gitlab/projects", app.oauthHandler.GitLabProjectsHandler)
+    router.GET("api/gitlab/projects/:id", app.oauthHandler.GitLabProjectHandler)
+    router.GET("/api/gitlab/projects/:id/issues", app.oauthHandler.GitLabProjectIssuesHandler)
 
     return router
 }

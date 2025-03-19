@@ -165,3 +165,75 @@ func (h *OAuthHandler) GitLabProjectsHandler(c *gin.Context) {
 
     c.JSON(http.StatusOK, projects)
 }
+
+func (h *OAuthHandler) GitLabProjectHandler(c *gin.Context) {
+    token := c.GetHeader("Authorization")
+    if token == "" {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "Токен отсутствует"})
+        return
+    }
+
+    projectID := c.Param("id") // Получаем ID проекта из URL
+    url := fmt.Sprintf("%s/api/v4/projects/%s", h.gitlabBaseURL, projectID)
+
+    req, err := http.NewRequest("GET", url, nil)
+    req.Header.Set("Authorization", token)
+
+    client := &http.Client{}
+    resp, err := client.Do(req)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка запроса к GitLab"})
+        return
+    }
+    defer resp.Body.Close()
+
+    body, err := ioutil.ReadAll(resp.Body)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка чтения ответа"})
+        return
+    }
+
+    var project map[string]interface{}
+    if err := json.Unmarshal(body, &project); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка парсинга данных"})
+        return
+    }
+
+    c.JSON(http.StatusOK, project)
+}
+
+func (h *OAuthHandler) GitLabProjectIssuesHandler(c *gin.Context) {
+    token := c.GetHeader("Authorization")
+    if token == "" {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "Токен отсутствует"})
+        return
+    }
+
+    projectID := c.Param("id") // Получаем ID проекта из URL
+    url := fmt.Sprintf("%s/api/v4/projects/%s/issues", h.gitlabBaseURL, projectID)
+
+    req, err := http.NewRequest("GET", url, nil)
+    req.Header.Set("Authorization", token)
+
+    client := &http.Client{}
+    resp, err := client.Do(req)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка запроса к GitLab"})
+        return
+    }
+    defer resp.Body.Close()
+
+    body, err := ioutil.ReadAll(resp.Body)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка чтения ответа"})
+        return
+    }
+
+    var issues []map[string]interface{}
+    if err := json.Unmarshal(body, &issues); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка парсинга данных"})
+        return
+    }
+
+    c.JSON(http.StatusOK, issues)
+}
