@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "golang.org/x/text/date"
@@ -74,22 +75,22 @@ func (pl *PullIncludes) CreateProject(name, description, startDate, endDate, prj
 
 func (pl *PullIncludes) GetUser(user_id string) (string, error) {
 	stmt := "SELECT CONCAT(usr_surname , ' ', usr_name, ' ', usr_patronomic) FROM users WHERE usr_id = $1"
-    var SurnameNamePatronomic string
-    err := pl.DB.QueryRow(context.Background(), stmt, user_id).Scan(&SurnameNamePatronomic)
-    if err != nil {
-        log.Println("Ошибка получения ФИО пользователя:", err)
-        return "", errors.New("Не удалось получить ФИО пользователя")
-    }
-    return SurnameNamePatronomic, nil
+	var SurnameNamePatronomic string
+	err := pl.DB.QueryRow(context.Background(), stmt, user_id).Scan(&SurnameNamePatronomic)
+	if err != nil {
+		log.Println("Ошибка получения ФИО пользователя:", err)
+		return "", errors.New("Не удалось получить ФИО пользователя")
+	}
+	return SurnameNamePatronomic, nil
 }
 
-func (pl *PullIncludes) UpdateProject(prj_title, prj_description, prj_start_date, prj_end_date string,  prj_id int) (error){
-    query := "UPDATE projects SET prj_title = $1, prj_description = $2, prj_start_date = $3, prj_end_date = $4 WHERE prj_id = $5;"
-    _, err := pl.DB.Exec(context.Background(), query, prj_title, prj_description, prj_start_date, prj_end_date, prj_id)
-    if err != nil {
-        return fmt.Errorf("не удалось изменить проект: %w", err)
-    }
-    return nil
+func (pl *PullIncludes) UpdateProject(prj_title, prj_description, prj_start_date, prj_end_date string, prj_id int) error {
+	query := "UPDATE projects SET prj_title = $1, prj_description = $2, prj_start_date = $3, prj_end_date = $4 WHERE prj_id = $5;"
+	_, err := pl.DB.Exec(context.Background(), query, prj_title, prj_description, prj_start_date, prj_end_date, prj_id)
+	if err != nil {
+		return fmt.Errorf("не удалось изменить проект: %w", err)
+	}
+	return nil
 }
 
 func (pl *PullIncludes) GetProject(prj_id int) (models.Project, error) {
@@ -129,16 +130,16 @@ func (pl *PullIncludes) GetProjects() ([]models.Project, error) {
 			log.Println("Ошибка чтения строки:", err)
 			return nil, errors.New("Ошибка обработки данных")
 		}
-		
+
 		fmt.Printf(project.PrjTitle)
 
-        ownerSurnameNamePatronomic, err := pl.GetUser(project.PrjOwner)
-        if err != nil {
-            return nil, errors.New("Ошибка получения пользователя")
-        }
-        
-        project.PrjOwner = ownerSurnameNamePatronomic
-        projects = append(projects, project)
+		ownerSurnameNamePatronomic, err := pl.GetUser(project.PrjOwner)
+		if err != nil {
+			return nil, errors.New("Ошибка получения пользователя")
+		}
+
+		project.PrjOwner = ownerSurnameNamePatronomic
+		projects = append(projects, project)
 	}
 
 	if rows.Err() != nil {
@@ -149,7 +150,7 @@ func (pl *PullIncludes) GetProjects() ([]models.Project, error) {
 	return projects, nil
 }
 
-func (pl *PullIncludes) CreateTask(tsk_prj_id int, tsk_title, tsk_description, tsk_priority, tsk_status string) error{
+func (pl *PullIncludes) CreateTask(tsk_prj_id int, tsk_title, tsk_description, tsk_priority, tsk_status string) error {
 	query := "INSERT INTO tasks (tsk_prj_id, tsk_title, tsk_description, tsk_priority, tsk_status) VALUES ($1, $2, $3, $4, $5)"
 	_, err := pl.DB.Exec(context.Background(), query, tsk_prj_id, tsk_title, tsk_description, tsk_priority, tsk_status)
 	if err != nil {
@@ -167,7 +168,7 @@ func (pl *PullIncludes) AddUsersProjects(projectID, userID int) error {
 	return nil
 }
 
-func (pl *PullIncludes) GetTasksProject(tsk_prj_id int) ([]models.Tasks, error){
+func (pl *PullIncludes) GetTasksProject(tsk_prj_id int) ([]models.Tasks, error) {
 	fmt.Print("dfdfd")
 	query := "SELECT tsk_id, tsk_prj_id, tsk_title, tsk_description, tsk_priority, tsk_status, tsk_assignee_id FROM tasks WHERE tsk_prj_id = $1"
 	rows, err := pl.DB.Query(context.Background(), query, tsk_prj_id)
@@ -178,7 +179,7 @@ func (pl *PullIncludes) GetTasksProject(tsk_prj_id int) ([]models.Tasks, error){
 	defer rows.Close()
 	fmt.Println("fffffff3")
 	var tasks []models.Tasks
-	for rows.Next(){
+	for rows.Next() {
 		var task models.Tasks
 		err := rows.Scan(
 			&task.TskId,
@@ -193,9 +194,8 @@ func (pl *PullIncludes) GetTasksProject(tsk_prj_id int) ([]models.Tasks, error){
 			log.Println("Ошибка чтения строки:", err)
 			return nil, errors.New("Ошибка обработки данных")
 		}
-		tasks = append(tasks,task)
-	} 
-	
+		tasks = append(tasks, task)
+	}
 
 	if rows.Err() != nil {
 		log.Println("Ошибка после обработки строк:", rows.Err())
@@ -214,10 +214,111 @@ func (pl *PullIncludes) DeleteProject(prj_id int) error {
 }
 
 func (pl *PullIncludes) DeleteTask(tsk_id int) error {
-    query := "DELETE FROM tasks WHERE tsk_id = $1"
-    _, err := pl.DB.Exec(context.Background(), query, tsk_id)
-    if err != nil {
-        return fmt.Errorf("не удалось удалить задачу: %w", err)
-    }
-    return nil
+	query := "DELETE FROM tasks WHERE tsk_id = $1"
+	_, err := pl.DB.Exec(context.Background(), query, tsk_id)
+	if err != nil {
+		return fmt.Errorf("не удалось удалить задачу: %w", err)
+	}
+	return nil
+}
+
+type Sprint struct {
+	SptID        int       `json:"spt_id"`
+	SptTitle     string    `json:"spt_title"`
+	SptStartDate time.Time `json:"spt_start_date"`
+	SptEndDate   time.Time `json:"spt_end_date"`
+	SptGoals     string    `json:"spt_goals"`
+	SptProjectID int       `json:"spt_project_id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+func (pl *PullIncludes) CreateSprint(title string, startDate, endDate time.Time, goals string, projectID int) (int, error) {
+	var sprintID int
+	query := `
+		INSERT INTO sprint (spt_title, spt_start_date, spt_end_date, spt_goals, spt_project_id)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING spt_id
+	`
+
+	err := pl.DB.QueryRow(
+		context.Background(),
+		query,
+		title,
+		startDate,
+		endDate,
+		goals,
+		projectID,
+	).Scan(&sprintID)
+
+	if err != nil {
+		return 0, fmt.Errorf("не удалось создать спринт: %w", err)
+	}
+
+	return sprintID, nil
+}
+
+// GetSprints получает список спринтов для проекта
+func (pl *PullIncludes) GetSprints(projectID int) ([]Sprint, error) {
+	query := `
+		SELECT spt_id, spt_title, spt_start_date, spt_end_date, spt_goals, spt_project_id, created_at, updated_at
+		FROM sprint
+		WHERE spt_project_id = $1
+		ORDER BY spt_start_date DESC
+	`
+
+	rows, err := pl.DB.Query(context.Background(), query, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка при получении спринтов: %v", err)
+	}
+	defer rows.Close()
+
+	var sprints []Sprint
+	for rows.Next() {
+		var sprint Sprint
+		err := rows.Scan(
+			&sprint.SptID,
+			&sprint.SptTitle,
+			&sprint.SptStartDate,
+			&sprint.SptEndDate,
+			&sprint.SptGoals,
+			&sprint.SptProjectID,
+			&sprint.CreatedAt,
+			&sprint.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("ошибка при сканировании спринта: %v", err)
+		}
+		sprints = append(sprints, sprint)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("ошибка при итерации по спринтам: %v", err)
+	}
+
+	return sprints, nil
+}
+
+// AddIssueToSprint добавляет задачу GitLab в спринт
+func (pl *PullIncludes) AddIssueToSprint(sprintID, issueID int, storyPoints int, priority string) error {
+	query := `
+		INSERT INTO sprint_issues (si_sprint_id, si_issue_id, si_story_points, si_priority)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (si_sprint_id, si_issue_id) DO NOTHING
+	`
+
+	_, err := pl.DB.Exec(
+		context.Background(),
+		query,
+		sprintID,
+		issueID,
+		storyPoints,
+		priority,
+	)
+
+	if err != nil {
+		return fmt.Errorf("не удалось добавить задачу в спринт: %w", err)
+	}
+
+	return nil
 }
