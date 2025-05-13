@@ -300,10 +300,10 @@ func (pl *PullIncludes) GetSprints(projectID int) ([]Sprint, error) {
 }
 
 // AddIssueToSprint добавляет задачу GitLab в спринт
-func (pl *PullIncludes) AddIssueToSprint(sprintID, issueID int, storyPoints int, priority string) error {
+func (pl *PullIncludes) AddIssueToSprint(sprintID, issueID int, storyPoints int, priority, nameIssue, descriptionIssue string) error {
 	query := `
-		INSERT INTO sprint_issues (si_sprint_id, si_issue_id, si_story_points, si_priority)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO sprint_issues (si_sprint_id, si_issue_id, si_story_points, si_priority, si_name_issues, si_description_issue)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (si_sprint_id, si_issue_id) DO NOTHING
 	`
 
@@ -314,6 +314,8 @@ func (pl *PullIncludes) AddIssueToSprint(sprintID, issueID int, storyPoints int,
 		issueID,
 		storyPoints,
 		priority,
+		nameIssue,
+		descriptionIssue,
 	)
 
 	if err != nil {
@@ -321,4 +323,115 @@ func (pl *PullIncludes) AddIssueToSprint(sprintID, issueID int, storyPoints int,
 	}
 
 	return nil
+}
+
+// GetSprint получает данные конкретного спринта
+func (pl *PullIncludes) GetSprint(sprintID int) (Sprint, error) {
+	var sprint Sprint
+	query := `
+		SELECT spt_id, spt_title, spt_start_date, spt_end_date, spt_goals, spt_project_id, created_at, updated_at
+		FROM sprint
+		WHERE spt_id = $1
+	`
+
+	err := pl.DB.QueryRow(context.Background(), query, sprintID).Scan(
+		&sprint.SptID,
+		&sprint.SptTitle,
+		&sprint.SptStartDate,
+		&sprint.SptEndDate,
+		&sprint.SptGoals,
+		&sprint.SptProjectID,
+		&sprint.CreatedAt,
+		&sprint.UpdatedAt,
+	)
+
+	if err != nil {
+		return Sprint{}, fmt.Errorf("ошибка при получении спринта: %w", err)
+	}
+
+	return sprint, nil
+}
+
+// GetSprintIssues получает задачи спринта
+func (pl *PullIncludes) GetSprintIssues(sprintID int) ([]models.SprintIssue, error) {
+    var exists bool
+    err := pl.DB.QueryRow(context.Background(),
+        "SELECT EXISTS(SELECT 1 FROM sprint WHERE spt_id = $1)",
+        sprintID).Scan(&exists)
+    if err != nil {
+        return nil, fmt.Errorf("ошибка при проверке существования спринта: %w", err)
+    }
+    if !exists {
+        return nil, models.ErrNoRecord
+    }
+
+    query := `
+        SELECT 
+            si_sprint_id,
+            si_issue_id,
+            si_story_points,
+            si_priority,
+            si_name_issues,
+            si_description_issue,
+            COALESCE(si_agile_status, 'To Do') as si_status,
+            si_assigned_to
+        FROM sprint_issues
+        WHERE si_sprint_id = $1
+    `
+
+    rows, err := pl.DB.Query(context.Background(), query, sprintID)
+    if err != nil {
+        return nil, fmt.Errorf("ошибка при выполнении запроса: %w", err)
+    }
+    defer rows.Close()
+
+    var issues []models.SprintIssue
+    for rows.Next() {
+        var issue models.SprintIssue
+        var assignedTo *int
+        err := rows.Scan(
+            &issue.SprintID,
+            &issue.IssueID,
+            &issue.StoryPoints,
+            &issue.Priority,
+            &issue.Title,
+            &issue.Description,
+            &issue.Status,
+            &assignedTo,
+        )
+        if err != nil {
+            return nil, fmt.Errorf("ошибка при сканировании задачи: %w", err)
+        }
+        issue.AssignedTo = assignedTo
+        issues = append(issues, issue)
+    }
+
+    if err = rows.Err(); err != nil {
+        return nil, fmt.Errorf("ошибка при итерации по задачам: %w", err)
+    }
+
+    return issues, nil
+}
+
+// UpdateSprintIssueAssignee обновляет участника задачи в спринте
+func (pl *PullIncludes) UpdateSprintIssueAssignee(sprintID, issueID, assigneeID int) error {
+    query := `
+        UPDATE sprint_issues 
+        SET si_assigned_to = $3
+        WHERE si_sprint_id = $1 AND si_issue_id = $2
+    `
+
+    _, err := pl.DB.Exec(
+        context.Background(),
+        query,
+        sprintID,
+        issueID,
+        assigneeID,
+    )
+
+    if err != nil {
+        return fmt.Errorf("не удалось обновить участника задачи: %w", err)
+    }
+
+    return nil
 }

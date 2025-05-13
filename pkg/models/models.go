@@ -37,3 +37,15 @@ type Tasks struct {
 	TskStatus      string  `db:"tsk_status"`
 	TskAssigneId   *string `db:"tsk_assignee_id"`
 }
+
+// SprintIssue представляет задачу в спринте
+type SprintIssue struct {
+    SprintID    int    `json:"sprint_id"`
+    IssueID     int    `json:"issue_id"`
+    StoryPoints int    `json:"story_points"`
+    Priority    string `json:"priority"`
+    Title       string `json:"title"`
+    Description string `json:"description"`
+    Status      string `json:"status"`
+    AssignedTo  *int   `json:"assigned_to"`
+}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"golangify.com/plaginagile/pkg/models"
 )
 
 type GitLabUser struct {
@@ -485,21 +486,104 @@ type AddIssueToSprintRequest struct {
 	IssueID     int    `json:"issue_id"`
 	StoryPoints int    `json:"story_points"`
 	Priority    string `json:"priority"`
+	NameIssue string   `json:"name_issue"`
+	DescriptionIssue string `json:"description_issue"`
 }
 
 func (app *application) addIssueToSprint(c *gin.Context) {
+	sprintID, err := strconv.Atoi(c.Param("sprintId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID спринта"})
+		return
+	}
+
 	var req AddIssueToSprintRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат данных"})
 		return
 	}
+	fmt.Print(req)
 
-	if req.SprintID == 0 || req.IssueID == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Необходимо указать ID спринта и задачи"})
+	// Используем ID спринта из URL вместо тела запроса
+	req.SprintID = sprintID
+
+	if req.IssueID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Необходимо указать ID задачи"})
 		return
 	}
 
-	err := app.models.AddIssueToSprint(req.SprintID, req.IssueID, req.StoryPoints, req.Priority)
+	err = app.models.AddIssueToSprint(req.SprintID, req.IssueID, req.StoryPoints, req.Priority, req.NameIssue, req.DescriptionIssue)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
+// getSprint получает данные конкретного спринта
+func (app *application) getSprint(c *gin.Context) {
+	sprintID, err := strconv.Atoi(c.Param("sprintId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный ID спринта"})
+		return
+	}
+
+	sprint, err := app.models.GetSprint(sprintID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, sprint)
+}
+
+// getSprintIssues получает задачи спринта
+func (app *application) getSprintIssues(c *gin.Context) {
+	sprintID, err := strconv.Atoi(c.Param("sprintId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID спринта"})
+		return
+	}
+
+	issues, err := app.models.GetSprintIssues(sprintID)
+	if err != nil {
+		if err == models.ErrNoRecord {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Спринт или задачи не найдены"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка при получении задач: %v", err)})
+		return
+	}
+	fmt.Print(issues)
+
+	c.JSON(http.StatusOK, issues)
+}
+
+type UpdateIssueAssigneeRequest struct {
+	IssueID    int `json:"issue_id"`
+	AssigneeID int `json:"assignee_id"`
+}
+
+func (app *application) updateIssueAssignee(c *gin.Context) {
+	sprintID, err := strconv.Atoi(c.Param("sprintId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID спринта"})
+		return
+	}
+
+	var req UpdateIssueAssigneeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат данных"})
+		return
+	}
+
+	if req.IssueID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Необходимо указать ID задачи"})
+		return
+	}
+
+	err = app.models.UpdateSprintIssueAssignee(sprintID, req.IssueID, req.AssigneeID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

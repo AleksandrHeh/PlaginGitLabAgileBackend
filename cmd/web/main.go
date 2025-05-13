@@ -99,8 +99,12 @@ func (app *application) routes() *gin.Engine {
 	// Маршруты для проектов
 	router.POST("/api/projects", app.oauthHandler.SaveProjectMetadata)
 	router.GET("/api/projects/:id/sprints", app.getSprints)
+	router.POST("/api/projects/:id/sprints", app.createSprint)
+	router.GET("/api/projects/:id/sprints/:sprintId", app.getSprint)
+	router.GET("/api/projects/:id/sprints/:sprintId/issues", app.getSprintIssues)
+	router.POST("/api/projects/:id/sprints/:sprintId/issues", app.addIssueToSprint)
+	router.PUT("/api/projects/:id/sprints/:sprintId/issues/assignee", app.updateIssueAssignee)
 	router.POST("/api/sprints", app.createSprint)
-	router.POST("/api/sprints/issues", app.addIssueToSprint)
 
 	return router
 }
