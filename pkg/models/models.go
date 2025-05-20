@@ -40,12 +40,16 @@ type Tasks struct {
 
 // SprintIssue представляет задачу в спринте
 type SprintIssue struct {
-    SprintID    int    `json:"sprint_id"`
-    IssueID     int    `json:"issue_id"`
-    StoryPoints int    `json:"story_points"`
-    Priority    string `json:"priority"`
-    Title       string `json:"title"`
-    Description string `json:"description"`
-    Status      string `json:"status"`
-    AssignedTo  *int   `json:"assigned_to"`
+    SprintID    int       `json:"sprint_id"`
+    IssueID     int       `json:"issue_id"`
+    StoryPoints int       `json:"story_points"`
+    Priority    string    `json:"priority"`
+    Title       string    `json:"title"`
+    Description string    `json:"description"`
+    Status      string    `json:"status"`
+    AssignedTo  *int      `json:"assigned_to"`
+    LastCommit  time.Time `json:"last_commit,omitempty"`
+    LastMerge   time.Time `json:"last_merge,omitempty"`
+    BranchName  string    `json:"branch_name,omitempty"`
+    MRID        *int      `json:"mr_id,omitempty"`
 }

@@ -373,7 +373,7 @@ func (pl *PullIncludes) GetSprintIssues(sprintID int) ([]models.SprintIssue, err
             si_priority,
             si_name_issues,
             si_description_issue,
-            COALESCE(si_agile_status, 'To Do') as si_status,
+            COALESCE(si_agile_status, 'К выполнению') as si_status,
             si_assigned_to
         FROM sprint_issues
         WHERE si_sprint_id = $1
@@ -413,11 +413,16 @@ func (pl *PullIncludes) GetSprintIssues(sprintID int) ([]models.SprintIssue, err
     return issues, nil
 }
 
-// UpdateSprintIssueAssignee обновляет участника задачи в спринте
-func (pl *PullIncludes) UpdateSprintIssueAssignee(sprintID, issueID, assigneeID int) error {
+// UpdateSprintIssueStatus обновляет статус задачи на основе GitLab событий
+func (pl *PullIncludes) UpdateSprintIssueStatus(sprintID, issueID int, status string, lastCommit, lastMerge *time.Time, branchName string, mrID *int) error {
     query := `
         UPDATE sprint_issues 
-        SET si_assigned_to = $3
+        SET 
+            si_agile_status = $3,
+            si_last_commit = COALESCE($4, si_last_commit),
+            si_last_merge = COALESCE($5, si_last_merge),
+            si_branch_name = COALESCE($6, si_branch_name),
+            si_mr_id = COALESCE($7, si_mr_id)
         WHERE si_sprint_id = $1 AND si_issue_id = $2
     `
 
@@ -426,12 +431,149 @@ func (pl *PullIncludes) UpdateSprintIssueAssignee(sprintID, issueID, assigneeID 
         query,
         sprintID,
         issueID,
+        status,
+        lastCommit,
+        lastMerge,
+        branchName,
+        mrID,
+    )
+
+    if err != nil {
+        return fmt.Errorf("не удалось обновить статус задачи: %w", err)
+    }
+
+    return nil
+}
+
+// GetSprintIssueByMRID получает задачу по ID Merge Request
+func (pl *PullIncludes) GetSprintIssueByMRID(mrID int) (*models.SprintIssue, error) {
+    query := `
+        SELECT 
+            si_sprint_id,
+            si_issue_id,
+            si_story_points,
+            si_priority,
+            si_name_issues,
+            si_description_issue,
+            COALESCE(si_agile_status, 'К выполнению') as si_status,
+            si_assigned_to,
+            si_last_commit,
+            si_last_merge,
+            si_branch_name,
+            si_mr_id
+        FROM sprint_issues
+        WHERE si_mr_id = $1
+    `
+
+    var issue models.SprintIssue
+    var assignedTo, mrIDPtr *int
+    var lastCommit, lastMerge *time.Time
+
+    err := pl.DB.QueryRow(context.Background(), query, mrID).Scan(
+        &issue.SprintID,
+        &issue.IssueID,
+        &issue.StoryPoints,
+        &issue.Priority,
+        &issue.Title,
+        &issue.Description,
+        &issue.Status,
+        &assignedTo,
+        &lastCommit,
+        &lastMerge,
+        &issue.BranchName,
+        &mrIDPtr,
+    )
+
+    if err != nil {
+        return nil, fmt.Errorf("ошибка при получении задачи по MR ID: %w", err)
+    }
+
+    issue.AssignedTo = assignedTo
+    issue.LastCommit = *lastCommit
+    issue.LastMerge = *lastMerge
+    issue.MRID = mrIDPtr
+
+    return &issue, nil
+}
+
+// UpdateSprintIssueAssignee обновляет участника задачи и автоматически меняет статус
+func (pl *PullIncludes) UpdateSprintIssueAssignee(sprintID, issueID, assigneeID int) error {
+    log.Printf("Начало обновления участника задачи: sprintID=%d, issueID=%d, assigneeID=%d", 
+        sprintID, issueID, assigneeID)
+
+    // Начинаем транзакцию
+    tx, err := pl.DB.Begin(context.Background())
+    if err != nil {
+        log.Printf("Ошибка начала транзакции: %v", err)
+        return fmt.Errorf("ошибка начала транзакции: %w", err)
+    }
+    defer tx.Rollback(context.Background())
+
+    // Проверяем существование задачи
+    var exists bool
+    err = tx.QueryRow(context.Background(),
+        "SELECT EXISTS(SELECT 1 FROM sprint_issues WHERE si_sprint_id = $1 AND si_issue_id = $2)",
+        sprintID, issueID).Scan(&exists)
+    if err != nil {
+        log.Printf("Ошибка проверки существования задачи: %v", err)
+        return fmt.Errorf("ошибка проверки существования задачи: %w", err)
+    }
+    if !exists {
+        log.Printf("Задача не найдена: sprintID=%d, issueID=%d", sprintID, issueID)
+        return fmt.Errorf("задача не найдена")
+    }
+
+    // Обновляем участника
+    query := `
+        UPDATE sprint_issues 
+        SET 
+            si_assigned_to = $3::integer,
+            si_agile_status = CASE 
+                WHEN $3::integer IS NOT NULL THEN 'В работе'
+                ELSE 'К выполнению'
+            END
+        WHERE si_sprint_id = $1 AND si_issue_id = $2
+    `
+
+    result, err := tx.Exec(
+        context.Background(),
+        query,
+        sprintID,
+        issueID,
         assigneeID,
     )
 
     if err != nil {
+        log.Printf("Ошибка выполнения SQL-запроса: %v", err)
         return fmt.Errorf("не удалось обновить участника задачи: %w", err)
     }
 
+    rowsAffected := result.RowsAffected()
+    log.Printf("Количество обновленных строк: %d", rowsAffected)
+
+    if rowsAffected == 0 {
+        log.Printf("Задача не была обновлена: sprintID=%d, issueID=%d", sprintID, issueID)
+        return fmt.Errorf("задача не была обновлена")
+    }
+
+    // Завершаем транзакцию
+    if err = tx.Commit(context.Background()); err != nil {
+        log.Printf("Ошибка завершения транзакции: %v", err)
+        return fmt.Errorf("ошибка завершения транзакции: %w", err)
+    }
+
+    log.Printf("Успешно обновлен участник задачи: sprintID=%d, issueID=%d, assigneeID=%d",
+        sprintID, issueID, assigneeID)
+
     return nil
+}
+
+func (pl *PullIncludes) GetSprintIDByIssueID(issueID int) (int, error) {
+	var sprintID int
+	query := "SELECT si_sprint_id FROM sprint_issues WHERE si_issue_id = $1"
+	err := pl.DB.QueryRow(context.Background(), query, issueID).Scan(&sprintID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get sprint ID for issue %d: %w", issueID, err)
+	}
+	return sprintID, nil
 }

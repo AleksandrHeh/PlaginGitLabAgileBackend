@@ -106,5 +106,8 @@ func (app *application) routes() *gin.Engine {
 	router.PUT("/api/projects/:id/sprints/:sprintId/issues/assignee", app.updateIssueAssignee)
 	router.POST("/api/sprints", app.createSprint)
 
+	// Маршрут для GitLab вебхуков
+	router.POST("/api/webhooks/gitlab", app.HandleGitLabWebhook)
+
 	return router
 }

@@ -568,26 +568,157 @@ type UpdateIssueAssigneeRequest struct {
 func (app *application) updateIssueAssignee(c *gin.Context) {
 	sprintID, err := strconv.Atoi(c.Param("sprintId"))
 	if err != nil {
+		app.errorLog.Printf("Неверный формат ID спринта: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID спринта"})
 		return
 	}
 
 	var req UpdateIssueAssigneeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		app.errorLog.Printf("Ошибка парсинга JSON: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат данных"})
 		return
 	}
 
+	app.infoLog.Printf("Получен запрос на обновление участника задачи: sprintID=%d, issueID=%d, assigneeID=%d", 
+		sprintID, req.IssueID, req.AssigneeID)
+
 	if req.IssueID == 0 {
+		app.errorLog.Printf("Отсутствует ID задачи в запросе")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Необходимо указать ID задачи"})
 		return
 	}
 
 	err = app.models.UpdateSprintIssueAssignee(sprintID, req.IssueID, req.AssigneeID)
 	if err != nil {
+		app.errorLog.Printf("Ошибка обновления участника задачи: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
+	app.infoLog.Printf("Успешно обновлен участник задачи: sprintID=%d, issueID=%d, assigneeID=%d",
+		sprintID, req.IssueID, req.AssigneeID)
+
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
+// GitLabWebhookRequest представляет структуру вебхука от GitLab
+type GitLabWebhookRequest struct {
+	ObjectKind string `json:"object_kind"`
+	EventName  string `json:"event_name"`
+	Project    struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	} `json:"project"`
+	Commits []struct {
+		ID        string    `json:"id"`
+		Message   string    `json:"message"`
+		Title     string    `json:"title"`
+		Timestamp time.Time `json:"timestamp"`
+		Author    struct {
+			Name  string `json:"name"`
+			Email string `json:"email"`
+		} `json:"author"`
+	} `json:"commits"`
+	Repository struct {
+		Name        string `json:"name"`
+		URL         string `json:"url"`
+		Description string `json:"description"`
+	} `json:"repository"`
+}
+
+// HandleGitLabWebhook обрабатывает вебхуки от GitLab
+func (app *application) HandleGitLabWebhook(c *gin.Context) {
+	// Логируем входящий запрос
+	app.infoLog.Printf("Получен вебхук от GitLab: %s", c.Request.Header.Get("X-Gitlab-Event"))
+
+	var webhook GitLabWebhookRequest
+	if err := c.ShouldBindJSON(&webhook); err != nil {
+		app.errorLog.Printf("Ошибка парсинга вебхука: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат данных вебхука"})
+		return
+	}
+
+	// Логируем тип события и данные
+	app.infoLog.Printf("Тип события: %s, Project ID: %d, Project Name: %s", 
+		webhook.EventName, webhook.Project.ID, webhook.Project.Name)
+
+	// Проверяем тип события
+	switch webhook.EventName {
+	case "push":
+		// Обработка коммитов
+		if err := app.handleGitLabPush(webhook); err != nil {
+			app.errorLog.Printf("Ошибка обработки push события: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	default:
+		app.infoLog.Printf("Получено событие: %s", webhook.EventName)
+		c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Событие получено"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
+// handleGitLabPush обрабатывает события push (коммиты)
+func (app *application) handleGitLabPush(webhook GitLabWebhookRequest) error {
+	if len(webhook.Commits) == 0 {
+		app.infoLog.Printf("Получен push без коммитов")
+		return nil
+	}
+
+	for _, commit := range webhook.Commits {
+		app.infoLog.Printf("Обработка коммита: %s, сообщение: %s", commit.ID, commit.Message)
+		
+		// Извлекаем номер задачи из сообщения коммита
+		issueID := extractIssueIDFromCommitMessage(commit.Message)
+		if issueID == 0 {
+			app.infoLog.Printf("Коммит не содержит ссылки на задачу: %s", commit.Message)
+			continue
+		}
+
+		// Получаем спринт, в котором находится задача
+		sprintID, err := app.models.GetSprintIDByIssueID(issueID)
+		if err != nil {
+			app.errorLog.Printf("Ошибка получения спринта для задачи %d: %v", issueID, err)
+			continue
+		}
+
+		app.infoLog.Printf("Обновление статуса задачи %d в спринте %d", issueID, sprintID)
+
+		// Обновляем статус задачи
+		err = app.models.UpdateSprintIssueStatus(
+			sprintID,
+			issueID,
+			"На проверке",
+			&commit.Timestamp,
+			nil,
+			"main", // Используем main как ветку по умолчанию
+			nil,
+		)
+		if err != nil {
+			app.errorLog.Printf("Ошибка обновления статуса задачи: %v", err)
+			continue
+		}
+
+		app.infoLog.Printf("Статус задачи %d успешно обновлен", issueID)
+	}
+
+	return nil
+}
+
+// extractIssueIDFromCommitMessage извлекает ID задачи из сообщения коммита
+func extractIssueIDFromCommitMessage(message string) int {
+	// Ищем паттерн #123 в сообщении коммита
+	var issueID int
+	_, err := fmt.Sscanf(message, "Fix #%d", &issueID)
+	if err != nil {
+		// Пробуем другие форматы
+		_, err = fmt.Sscanf(message, "#%d", &issueID)
+		if err != nil {
+			return 0
+		}
+	}
+	return issueID
 }
