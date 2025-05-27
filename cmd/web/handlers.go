@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -249,8 +250,9 @@ func (h *OAuthHandler) GitLabMembersHandler(c *gin.Context) {
 		return
 	}
 
-	url := fmt.Sprintf("%s/api/v4/users", h.gitlabBaseURL)
-	req, err := http.NewRequest("GET", url, nil)
+	// Получаем список пользователей
+	usersURL := fmt.Sprintf("%s/api/v4/users", h.gitlabBaseURL)
+	req, err := http.NewRequest("GET", usersURL, nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка создания запроса"})
 		return
@@ -266,14 +268,13 @@ func (h *OAuthHandler) GitLabMembersHandler(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body) // Исправлено: читаем resp.Body, а не req.Body
+	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		fmt.Println("Ошибка чтения ответа:", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка чтения ответа"})
 		return
 	}
 
-	// Проверяем статус ответа
 	if resp.StatusCode != http.StatusOK {
 		var errorResponse map[string]interface{}
 		if err := json.Unmarshal(body, &errorResponse); err == nil {
@@ -284,7 +285,6 @@ func (h *OAuthHandler) GitLabMembersHandler(c *gin.Context) {
 		return
 	}
 
-	// Парсим данные как массив пользователей
 	var users []map[string]interface{}
 	if err := json.Unmarshal(body, &users); err != nil {
 		fmt.Println("Ошибка парсинга данных пользователей:", err)
@@ -292,15 +292,64 @@ func (h *OAuthHandler) GitLabMembersHandler(c *gin.Context) {
 		return
 	}
 
-	// Форматируем данные для фронтенда
+	// Получаем роли для каждого пользователя
 	var members []map[string]interface{}
 	for _, user := range users {
+		// Получаем роли пользователя через API GitLab
+		userID := int(user["id"].(float64))
+		rolesURL := fmt.Sprintf("%s/api/v4/users/%d/access_requests", h.gitlabBaseURL, userID)
+		rolesReq, err := http.NewRequest("GET", rolesURL, nil)
+		if err != nil {
+			continue
+		}
+		rolesReq.Header.Set("Authorization", token)
+
+		rolesResp, err := client.Do(rolesReq)
+		if err != nil {
+			continue
+		}
+
+		var role string
+		// Определяем роль на основе доступов пользователя
+		if rolesResp.StatusCode == http.StatusOK {
+			// Проверяем права доступа пользователя
+			projectsURL := fmt.Sprintf("%s/api/v4/users/%d/projects", h.gitlabBaseURL, userID)
+			projectsReq, err := http.NewRequest("GET", projectsURL, nil)
+			if err == nil {
+				projectsReq.Header.Set("Authorization", token)
+				projectsResp, err := client.Do(projectsReq)
+				if err == nil {
+					defer projectsResp.Body.Close()
+					if projectsResp.StatusCode == http.StatusOK {
+						// Если пользователь имеет доступ к проектам, проверяем его права
+						if strings.Contains(token, "api") {
+							role = "Developer"
+						} else if strings.Contains(token, "write_repository") {
+							role = "Maintainer"
+						} else if strings.Contains(token, "admin") {
+							role = "Admin"
+						} else {
+							role = "Guest"
+						}
+					}
+				}
+			}
+		}
+		rolesResp.Body.Close()
+
+		// Если роль не определена, используем значение по умолчанию
+		if role == "" {
+			role = "Guest"
+		}
+
 		members = append(members, map[string]interface{}{
 			"id":         user["id"],
 			"name":       user["name"],
 			"email":      user["email"],
 			"created_at": user["created_at"],
-			"role":       "Developer", // GitLab не возвращает роль, можно получить через /api/v4/users/:id/impersonation_tokens
+			"role":       role,
+			"username":   user["username"],
+			"state":      user["state"],
 		})
 	}
 
@@ -538,7 +587,7 @@ func (app *application) getSprint(c *gin.Context) {
 	c.JSON(http.StatusOK, sprint)
 }
 
-// getSprintIssues получает задачи спринта
+// getSprintIssues получает задачи спринта и синхронизирует их статусы с GitLab
 func (app *application) getSprintIssues(c *gin.Context) {
 	sprintID, err := strconv.Atoi(c.Param("sprintId"))
 	if err != nil {
@@ -546,6 +595,27 @@ func (app *application) getSprintIssues(c *gin.Context) {
 		return
 	}
 
+	// Получаем токен из заголовка
+	token := c.GetHeader("Authorization")
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Токен отсутствует"})
+		return
+	}
+
+	// Получаем ID проекта из параметров запроса
+	projectID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID проекта"})
+		return
+	}
+
+	// Синхронизируем статусы задач с GitLab
+	if err := app.syncAllIssuesWithGitLab(sprintID, projectID, token); err != nil {
+		app.errorLog.Printf("Ошибка синхронизации задач с GitLab: %v", err)
+		// Продолжаем выполнение даже при ошибке синхронизации
+	}
+
+	// Получаем обновленные задачи
 	issues, err := app.models.GetSprintIssues(sprintID)
 	if err != nil {
 		if err == models.ErrNoRecord {
@@ -555,7 +625,6 @@ func (app *application) getSprintIssues(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка при получении задач: %v", err)})
 		return
 	}
-	fmt.Print(issues)
 
 	c.JSON(http.StatusOK, issues)
 }
@@ -614,7 +683,7 @@ type GitLabWebhookRequest struct {
 		ID        string    `json:"id"`
 		Message   string    `json:"message"`
 		Title     string    `json:"title"`
-		Timestamp time.Time `json:"timestamp"`
+		Timestamp string    `json:"timestamp"`
 		Author    struct {
 			Name  string `json:"name"`
 			Email string `json:"email"`
@@ -625,12 +694,40 @@ type GitLabWebhookRequest struct {
 		URL         string `json:"url"`
 		Description string `json:"description"`
 	} `json:"repository"`
+	// Добавляем поля для Merge Request
+	ObjectAttributes struct {
+		ID          int       `json:"id"`
+		IID         int       `json:"iid"`
+		Title       string    `json:"title"`
+		Description string    `json:"description"`
+		State       string    `json:"state"`
+		CreatedAt   string    `json:"created_at"`
+		UpdatedAt   string    `json:"updated_at"`
+		SourceBranch string   `json:"source_branch"`
+		TargetBranch string   `json:"target_branch"`
+		LastCommit struct {
+			ID string `json:"id"`
+		} `json:"last_commit"`
+	} `json:"object_attributes"`
 }
 
 // HandleGitLabWebhook обрабатывает вебхуки от GitLab
 func (app *application) HandleGitLabWebhook(c *gin.Context) {
-	// Логируем входящий запрос
-	app.infoLog.Printf("Получен вебхук от GitLab: %s", c.Request.Header.Get("X-Gitlab-Event"))
+	eventType := c.Request.Header.Get("X-Gitlab-Event")
+	app.infoLog.Printf("Получен вебхук от GitLab: %s", eventType)
+	app.infoLog.Printf("Заголовки запроса: %v", c.Request.Header)
+
+	// Читаем тело запроса для логирования
+	body, err := ioutil.ReadAll(c.Request.Body)
+	if err != nil {
+		app.errorLog.Printf("Ошибка чтения тела запроса: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Ошибка чтения тела запроса"})
+		return
+	}
+	// Восстанавливаем тело запроса для дальнейшей обработки
+	c.Request.Body = ioutil.NopCloser(bytes.NewBuffer(body))
+	
+	app.infoLog.Printf("Тело вебхука: %s", string(body))
 
 	var webhook GitLabWebhookRequest
 	if err := c.ShouldBindJSON(&webhook); err != nil {
@@ -639,26 +736,69 @@ func (app *application) HandleGitLabWebhook(c *gin.Context) {
 		return
 	}
 
-	// Логируем тип события и данные
 	app.infoLog.Printf("Тип события: %s, Project ID: %d, Project Name: %s", 
 		webhook.EventName, webhook.Project.ID, webhook.Project.Name)
+	app.infoLog.Printf("ObjectKind: %s, State: %s", 
+		webhook.ObjectKind, webhook.ObjectAttributes.State)
 
-	// Проверяем тип события
-	switch webhook.EventName {
+	switch webhook.ObjectKind {
 	case "push":
-		// Обработка коммитов
 		if err := app.handleGitLabPush(webhook); err != nil {
 			app.errorLog.Printf("Ошибка обработки push события: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+	case "merge_request":
+		app.infoLog.Printf("Обработка merge request события: %s", webhook.ObjectAttributes.State)
+		if err := app.handleGitLabMergeRequest(webhook); err != nil {
+			app.errorLog.Printf("Ошибка обработки merge request события: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	default:
-		app.infoLog.Printf("Получено событие: %s", webhook.EventName)
-		c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Событие получено"})
-		return
+		app.infoLog.Printf("Получено событие: %s", webhook.ObjectKind)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
+// extractIssueIDFromCommitMessage извлекает ID задачи из сообщения коммита
+func extractIssueIDFromCommitMessage(message string) int {
+	// Разбиваем сообщение на строки
+	lines := strings.Split(message, "\n")
+	
+	// Проверяем каждую строку на наличие ссылки на задачу
+	for _, line := range lines {
+		// Убираем лишние пробелы
+		line = strings.TrimSpace(line)
+		
+		// Пробуем разные форматы
+		var issueID int
+		
+		// Формат "Fix #123"
+		if _, err := fmt.Sscanf(line, "Fix #%d", &issueID); err == nil {
+			return issueID
+		}
+		
+		// Формат "Closes #123"
+		if _, err := fmt.Sscanf(line, "Closes #%d", &issueID); err == nil {
+			return issueID
+		}
+		
+		// Формат "#123"
+		if _, err := fmt.Sscanf(line, "#%d", &issueID); err == nil {
+			return issueID
+		}
+		
+		// Формат "See merge request ... !123"
+		if strings.Contains(line, "See merge request") {
+			if _, err := fmt.Sscanf(line, "See merge request %s!%d", nil, &issueID); err == nil {
+				return issueID
+			}
+		}
+	}
+	
+	return 0
 }
 
 // handleGitLabPush обрабатывает события push (коммиты)
@@ -678,6 +818,8 @@ func (app *application) handleGitLabPush(webhook GitLabWebhookRequest) error {
 			continue
 		}
 
+		app.infoLog.Printf("Найдена ссылка на задачу #%d в коммите", issueID)
+
 		// Получаем спринт, в котором находится задача
 		sprintID, err := app.models.GetSprintIDByIssueID(issueID)
 		if err != nil {
@@ -687,12 +829,19 @@ func (app *application) handleGitLabPush(webhook GitLabWebhookRequest) error {
 
 		app.infoLog.Printf("Обновление статуса задачи %d в спринте %d", issueID, sprintID)
 
+		// Парсим время коммита из строки ISO 8601
+		commitTime, err := time.Parse(time.RFC3339, commit.Timestamp)
+		if err != nil {
+			app.errorLog.Printf("Ошибка парсинга времени коммита: %v (время: %s)", err, commit.Timestamp)
+			commitTime = time.Now() // Используем текущее время как запасной вариант
+		}
+
 		// Обновляем статус задачи
 		err = app.models.UpdateSprintIssueStatus(
 			sprintID,
 			issueID,
 			"На проверке",
-			&commit.Timestamp,
+			&commitTime,
 			nil,
 			"main", // Используем main как ветку по умолчанию
 			nil,
@@ -708,17 +857,318 @@ func (app *application) handleGitLabPush(webhook GitLabWebhookRequest) error {
 	return nil
 }
 
-// extractIssueIDFromCommitMessage извлекает ID задачи из сообщения коммита
-func extractIssueIDFromCommitMessage(message string) int {
-	// Ищем паттерн #123 в сообщении коммита
-	var issueID int
-	_, err := fmt.Sscanf(message, "Fix #%d", &issueID)
-	if err != nil {
-		// Пробуем другие форматы
-		_, err = fmt.Sscanf(message, "#%d", &issueID)
-		if err != nil {
-			return 0
+// extractIssueIDFromMergeRequest извлекает ID задачи из названия или описания мердж-реквеста
+func extractIssueIDFromMergeRequest(title, description string) int {
+	// Разбиваем описание на строки
+	lines := strings.Split(description, "\n")
+	
+	// Проверяем каждую строку на наличие ключевых слов
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		
+		// Пробуем разные форматы с разными ключевыми словами
+		var issueID int
+		
+		// Форматы: "Closes #123", "Fixes #123", "Resolves #123"
+		keywords := []string{"Closes", "Fixes", "Resolves"}
+		for _, keyword := range keywords {
+			pattern := fmt.Sprintf("%s #%%d", keyword)
+			if _, err := fmt.Sscanf(line, pattern, &issueID); err == nil {
+				return issueID
+			}
+		}
+		
+		// Формат "Fix #123" в названии
+		if _, err := fmt.Sscanf(title, "Fix #%d", &issueID); err == nil {
+			return issueID
+		}
+		
+		// Формат "#123" в названии или описании
+		if _, err := fmt.Sscanf(line, "#%d", &issueID); err == nil {
+			return issueID
 		}
 	}
-	return issueID
+	
+	// Если в описании не нашли, проверяем название
+	var issueID int
+	if _, err := fmt.Sscanf(title, "#%d", &issueID); err == nil {
+		return issueID
+	}
+	
+	return 0
+}
+
+// handleGitLabMergeRequest обрабатывает события мердж-реквеста
+func (app *application) handleGitLabMergeRequest(webhook GitLabWebhookRequest) error {
+	app.infoLog.Printf("Обработка мердж-реквеста #%d: %s (состояние: %s)", 
+		webhook.ObjectAttributes.IID, 
+		webhook.ObjectAttributes.Title,
+		webhook.ObjectAttributes.State)
+	
+	app.infoLog.Printf("Описание мердж-реквеста: %s", webhook.ObjectAttributes.Description)
+
+	// Извлекаем номер задачи из названия или описания мердж-реквеста
+	issueID := extractIssueIDFromMergeRequest(webhook.ObjectAttributes.Title, webhook.ObjectAttributes.Description)
+	if issueID == 0 {
+		app.infoLog.Printf("Мердж-реквест не содержит ссылки на задачу: %s", webhook.ObjectAttributes.Title)
+		return nil
+	}
+
+	app.infoLog.Printf("Найдена ссылка на задачу #%d в мердж-реквесте", issueID)
+
+	// Получаем спринт, в котором находится задача
+	sprintID, err := app.models.GetSprintIDByIssueID(issueID)
+	if err != nil {
+		app.errorLog.Printf("Ошибка получения спринта для задачи %d: %v", issueID, err)
+		return err
+	}
+
+	app.infoLog.Printf("Обновление статуса задачи %d в спринте %d (состояние MR: %s)", 
+		issueID, sprintID, webhook.ObjectAttributes.State)
+
+	// Проверяем состояние мердж-реквеста
+	switch webhook.ObjectAttributes.State {
+	case "merged":
+		// Парсим время обновления из строки ISO 8601
+		updatedAt, err := time.Parse(time.RFC3339, webhook.ObjectAttributes.UpdatedAt)
+		if err != nil {
+			app.errorLog.Printf("Ошибка парсинга времени обновления: %v (время: %s)", err, webhook.ObjectAttributes.UpdatedAt)
+			updatedAt = time.Now()
+		}
+
+		app.infoLog.Printf("Мердж-реквест слит, обновляем статус задачи на 'Готово' (время: %v)", updatedAt)
+		err = app.models.UpdateSprintIssueStatus(
+			sprintID,
+			issueID,
+			"Готово", // Явно указываем статус
+			nil,
+			&updatedAt,
+			webhook.ObjectAttributes.SourceBranch,
+			&webhook.ObjectAttributes.IID,
+		)
+		if err != nil {
+			app.errorLog.Printf("Ошибка обновления статуса задачи: %v", err)
+			return err
+		}
+		app.infoLog.Printf("Статус задачи %d успешно обновлен после мерджа", issueID)
+
+	case "opened", "reopened":
+		app.infoLog.Printf("Мердж-реквест открыт/переоткрыт, обновляем статус задачи на 'На проверке'")
+		err = app.models.UpdateSprintIssueStatus(
+			sprintID,
+			issueID,
+			"На проверке", // Явно указываем статус
+			nil,
+			nil,
+			webhook.ObjectAttributes.SourceBranch,
+			&webhook.ObjectAttributes.IID,
+		)
+		if err != nil {
+			app.errorLog.Printf("Ошибка обновления статуса задачи: %v", err)
+			return err
+		}
+		app.infoLog.Printf("Статус задачи %d обновлен на 'На проверке'", issueID)
+
+	case "closed":
+		app.infoLog.Printf("Мердж-реквест закрыт без слияния")
+		// Можно добавить логику для обработки закрытого без слияния MR
+
+	default:
+		app.infoLog.Printf("Неизвестное состояние мердж-реквеста: %s", webhook.ObjectAttributes.State)
+	}
+
+	return nil
+}
+
+func (app *application) getSprintIssue(c *gin.Context) {
+	sprintID, err := strconv.Atoi(c.Param("sprintId"))
+	if err != nil {
+		app.errorLog.Printf("Неверный формат ID спринта: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID спринта"})
+		return
+	}
+
+	issueID, err := strconv.Atoi(c.Param("taskId"))
+	if err != nil {
+		app.errorLog.Printf("Неверный формат ID задачи: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID задачи"})
+		return
+	}
+
+	// Получаем информацию о задаче из базы данных
+	issue, err := app.models.GetSprintIssue(sprintID, issueID)
+	if err != nil {
+		app.errorLog.Printf("Ошибка при получении задачи: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Не удалось получить информацию о задаче"})
+		return
+	}
+
+	if issue == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Задача не найдена"})
+		return
+	}
+
+	// Получаем дополнительную информацию из GitLab
+	token := c.GetHeader("Authorization")
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Токен отсутствует"})
+		return
+	}
+
+	// Получаем информацию о коммитах и мердж-реквестах из GitLab
+	gitlabURL := fmt.Sprintf("%s/api/v4/projects/%s/issues/%d", app.oauthHandler.gitlabBaseURL, c.Param("id"), issueID)
+	req, err := http.NewRequest("GET", gitlabURL, nil)
+	if err != nil {
+		app.errorLog.Printf("Ошибка создания запроса к GitLab: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка запроса к GitLab"})
+		return
+	}
+
+	req.Header.Set("Authorization", token)
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		app.errorLog.Printf("Ошибка запроса к GitLab: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка запроса к GitLab"})
+		return
+	}
+	defer resp.Body.Close()
+
+	var gitlabIssue map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&gitlabIssue); err != nil {
+		app.errorLog.Printf("Ошибка парсинга ответа от GitLab: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка обработки ответа от GitLab"})
+		return
+	}
+
+	// Объединяем данные из базы и GitLab
+	response := map[string]interface{}{
+		"id": issue.IssueID,
+		"title": issue.Title,
+		"description": issue.Description,
+		"status": issue.Status,
+		"priority": issue.Priority,
+		"assigned_to": issue.AssignedTo,
+		"si_last_commit": issue.LastCommit,
+		"si_last_merge": issue.LastMerge,
+		"si_branch_name": issue.BranchName,
+		"si_mr_id": issue.MRID,
+		"gitlab_data": gitlabIssue,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// syncIssueStatusWithGitLab синхронизирует статус задачи с GitLab
+func (app *application) syncIssueStatusWithGitLab(projectID int, issueID int, token string) error {
+	// Получаем информацию о задаче из GitLab
+	gitlabURL := fmt.Sprintf("%s/api/v4/projects/%d/issues/%d", app.oauthHandler.gitlabBaseURL, projectID, issueID)
+	req, err := http.NewRequest("GET", gitlabURL, nil)
+	if err != nil {
+		return fmt.Errorf("ошибка создания запроса к GitLab: %v", err)
+	}
+
+	req.Header.Set("Authorization", token)
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("ошибка запроса к GitLab: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var gitlabIssue struct {
+		State string `json:"state"`
+		IID   int    `json:"iid"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&gitlabIssue); err != nil {
+		return fmt.Errorf("ошибка парсинга ответа от GitLab: %v", err)
+	}
+
+	// Если задача в GitLab закрыта, обновляем статус в нашей системе
+	if gitlabIssue.State == "closed" {
+		// Получаем спринт, в котором находится задача
+		sprintID, err := app.models.GetSprintIDByIssueID(issueID)
+		if err != nil {
+			return fmt.Errorf("ошибка получения спринта для задачи %d: %v", issueID, err)
+		}
+
+		// Получаем текущий статус задачи
+		issue, err := app.models.GetSprintIssue(sprintID, issueID)
+		if err != nil {
+			return fmt.Errorf("ошибка получения задачи %d: %v", issueID, err)
+		}
+
+		// Если статус не "Готово", обновляем его
+		if issue.Status != "Готово" {
+			app.infoLog.Printf("Синхронизация: задача #%d в GitLab закрыта, обновляем статус на 'Готово'", issueID)
+			err = app.models.UpdateSprintIssueStatus(
+				sprintID,
+				issueID,
+				"Готово",
+				nil,
+				nil,
+				issue.BranchName,
+				&gitlabIssue.IID,
+			)
+			if err != nil {
+				return fmt.Errorf("ошибка обновления статуса задачи: %v", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// syncAllIssuesWithGitLab синхронизирует статусы всех задач в спринте с GitLab
+func (app *application) syncAllIssuesWithGitLab(sprintID int, projectID int, token string) error {
+	// Получаем все задачи спринта
+	issues, err := app.models.GetSprintIssues(sprintID)
+	if err != nil {
+		return fmt.Errorf("ошибка получения задач спринта: %v", err)
+	}
+
+	// Синхронизируем каждую задачу
+	for _, issue := range issues {
+		if err := app.syncIssueStatusWithGitLab(projectID, issue.IssueID, token); err != nil {
+			app.errorLog.Printf("Ошибка синхронизации задачи #%d: %v", issue.IssueID, err)
+			// Продолжаем с другими задачами даже если одна не удалась
+			continue
+		}
+	}
+
+	return nil
+}
+
+// completeSprint обрабатывает запрос на завершение спринта
+func (app *application) completeSprint(c *gin.Context) {
+	sprintID, err := strconv.Atoi(c.Param("sprintId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID спринта"})
+		return
+	}
+
+	// Проверяем существование спринта
+	sprint, err := app.models.GetSprint(sprintID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Спринт не найден"})
+		return
+	}
+
+	// Проверяем, не завершен ли уже спринт
+	if sprint.SptStatus == "completed" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Спринт уже завершен"})
+		return
+	}
+
+	// Завершаем спринт
+	err = app.models.CompleteSprint(sprintID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка при завершении спринта: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"message": "Спринт успешно завершен",
+	})
 }

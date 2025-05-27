@@ -102,8 +102,10 @@ func (app *application) routes() *gin.Engine {
 	router.POST("/api/projects/:id/sprints", app.createSprint)
 	router.GET("/api/projects/:id/sprints/:sprintId", app.getSprint)
 	router.GET("/api/projects/:id/sprints/:sprintId/issues", app.getSprintIssues)
+	router.GET("/api/projects/:id/sprints/:sprintId/issues/:taskId", app.getSprintIssue)
 	router.POST("/api/projects/:id/sprints/:sprintId/issues", app.addIssueToSprint)
 	router.PUT("/api/projects/:id/sprints/:sprintId/issues/assignee", app.updateIssueAssignee)
+	router.PUT("/api/projects/:id/sprints/:sprintId/complete", app.completeSprint)
 	router.POST("/api/sprints", app.createSprint)
 
 	// Маршрут для GitLab вебхуков

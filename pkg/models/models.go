@@ -53,3 +53,7 @@ type SprintIssue struct {
     BranchName  string    `json:"branch_name,omitempty"`
     MRID        *int      `json:"mr_id,omitempty"`
 }
+
+type Models interface {
+	GetSprintIssue(sprintID, issueID int) (*SprintIssue, error)
+}
