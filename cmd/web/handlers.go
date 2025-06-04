@@ -29,6 +29,7 @@ type OAuthHandler struct {
 	clientSecret  string
 	redirectURI   string
 	gitlabBaseURL string // Базовый URL для локального GitLab
+	app           *application
 }
 
 func (h *OAuthHandler) GitLabAuthHandler(c *gin.Context) {
@@ -294,65 +295,46 @@ func (h *OAuthHandler) GitLabMembersHandler(c *gin.Context) {
 		return
 	}
 
-	// Получаем роли для каждого пользователя
+	// Получаем роли для каждого пользователя из нашей БД
 	var members []map[string]interface{}
 	for _, user := range users {
-		// Получаем роли пользователя через API GitLab
 		userID := int(user["id"].(float64))
-		rolesURL := fmt.Sprintf("%s/api/v4/users/%d/access_requests", h.gitlabBaseURL, userID)
-		rolesReq, err := http.NewRequest("GET", rolesURL, nil)
-		if err != nil {
-			continue
+		
+		// Получаем настройки пользователя из нашей БД
+		var settings struct {
+			Role string `json:"role"`
 		}
-		rolesReq.Header.Set("Authorization", token)
-
-		rolesResp, err := client.Do(rolesReq)
+		
+		err := h.app.db.QueryRow(context.Background(), `
+			SELECT us_role 
+			FROM user_settings 
+			WHERE us_user_id = $1
+		`, userID).Scan(&settings.Role)
+		
+		// Если настройки не найдены, используем значение по умолчанию
 		if err != nil {
-			continue
-		}
-
-		var role string
-		// Определяем роль на основе доступов пользователя
-		if rolesResp.StatusCode == http.StatusOK {
-			// Проверяем права доступа пользователя
-			projectsURL := fmt.Sprintf("%s/api/v4/users/%d/projects", h.gitlabBaseURL, userID)
-			projectsReq, err := http.NewRequest("GET", projectsURL, nil)
-			if err == nil {
-				projectsReq.Header.Set("Authorization", token)
-				projectsResp, err := client.Do(projectsReq)
-				if err == nil {
-					defer projectsResp.Body.Close()
-					if projectsResp.StatusCode == http.StatusOK {
-						// Если пользователь имеет доступ к проектам, проверяем его права
-						if strings.Contains(token, "api") {
-							role = "Developer"
-						} else if strings.Contains(token, "write_repository") {
-							role = "Maintainer"
-						} else if strings.Contains(token, "admin") {
-							role = "Admin"
-						} else {
-							role = "Guest"
-						}
-					}
-				}
+			if err == sql.ErrNoRows {
+				settings.Role = "developer"
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка получения настроек пользователя"})
+				return
 			}
 		}
-		rolesResp.Body.Close()
-
-		// Если роль не определена, используем значение по умолчанию
-		if role == "" {
-			role = "Guest"
-		}
-
-		members = append(members, map[string]interface{}{
+		
+		// Объединяем данные из GitLab и нашей БД
+		memberWithSettings := map[string]interface{}{
 			"id":         user["id"],
 			"name":       user["name"],
 			"email":      user["email"],
-			"created_at": user["created_at"],
-			"role":       role,
+			"avatar_url": user["avatar_url"],
 			"username":   user["username"],
 			"state":      user["state"],
-		})
+			"userSettings": map[string]interface{}{
+				"us_role": settings.Role,
+			},
+		}
+		
+		members = append(members, memberWithSettings)
 	}
 
 	c.JSON(http.StatusOK, members)
@@ -1175,149 +1157,148 @@ func (app *application) completeSprint(c *gin.Context) {
 	})
 }
 
-// GetUserSettings получает настройки пользователя
-func (app *application) GetUserSettings(c *gin.Context) {
-	userID, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID пользователя"})
+func (h *OAuthHandler) GitLabProjectMembersHandler(c *gin.Context) {
+	token := c.GetHeader("Authorization")
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Токен отсутствует"})
 		return
 	}
 
-	// Получаем настройки пользователя из БД
-	var settings models.UserSettings
-	err = app.db.QueryRow(context.Background(), `
-		SELECT us_id, us_user_id, us_role, us_status, created_at, updated_at 
-		FROM user_settings 
-		WHERE us_user_id = $1
-	`, userID).Scan(
-		&settings.UsID,
-		&settings.UsUserID,
-		&settings.UsRole,
-		&settings.UsStatus,
-		&settings.CreatedAt,
-		&settings.UpdatedAt,
-	)
-
+	projectID := c.Param("id")
+	url := fmt.Sprintf("%s/api/v4/projects/%s/members", h.gitlabBaseURL, projectID)
+	
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			// Если настройки не найдены, создаем их с дефолтными значениями
-			settings = models.UserSettings{
-				UsUserID: userID,
-				UsRole:   "developer",
-				UsStatus: 1,
-			}
-			_, err = app.db.Exec(context.Background(), `
-				INSERT INTO user_settings (us_user_id, us_role, us_status)
-				VALUES ($1, $2, $3)
-			`, settings.UsUserID, settings.UsRole, settings.UsStatus)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при создании настроек пользователя"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка создания запроса"})
+		return
+	}
+	req.Header.Set("Authorization", token)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка запроса к GitLab"})
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка чтения ответа"})
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		var errorResponse map[string]interface{}
+		if err := json.Unmarshal(body, &errorResponse); err == nil {
+			c.JSON(resp.StatusCode, gin.H{"error": errorResponse["message"]})
+		} else {
+			c.JSON(resp.StatusCode, gin.H{"error": string(body)})
+		}
+		return
+	}
+
+	var members []map[string]interface{}
+	if err := json.Unmarshal(body, &members); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка парсинга данных"})
+		return
+	}
+
+	// Получаем настройки пользователей из локальной БД
+	var membersWithSettings []map[string]interface{}
+	for _, member := range members {
+		userID := int(member["id"].(float64))
+		
+		// Получаем настройки пользователя из локальной БД
+		var settings struct {
+			Role string `json:"role"`
+		}
+		
+		// Получаем настройки пользователя из БД
+		err := h.app.db.QueryRow(context.Background(), `
+			SELECT us_role 
+			FROM user_settings 
+			WHERE us_user_id = $1
+		`, userID).Scan(&settings.Role)
+		
+		// Если настройки не найдены, используем значение по умолчанию
+		if err != nil {
+			if err == sql.ErrNoRows {
+				settings.Role = "developer"
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка получения настроек пользователя"})
 				return
 			}
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при получении настроек пользователя"})
-			return
 		}
+		
+		// Объединяем данные из GitLab и локальной БД
+		memberWithSettings := map[string]interface{}{
+			"id": member["id"],
+			"name": member["name"],
+			"username": member["username"],
+			"email": member["email"],
+			"avatar_url": member["avatar_url"],
+			"created_at": member["created_at"],
+			"userSettings": map[string]interface{}{
+				"us_role": settings.Role,
+			},
+		}
+		
+		membersWithSettings = append(membersWithSettings, memberWithSettings)
 	}
 
-	c.JSON(http.StatusOK, settings)
+	c.JSON(http.StatusOK, membersWithSettings)
 }
 
-// UpdateUserSettings обновляет настройки пользователя
-func (app *application) UpdateUserSettings(c *gin.Context) {
-	userID, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID пользователя"})
+type UpdateUserRoleRequest struct {
+	Role string `json:"role" binding:"required"`
+}
+
+func (h *OAuthHandler) UpdateUserRoleHandler(c *gin.Context) {
+	userID := c.Param("id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID пользователя не указан"})
 		return
 	}
 
-	var request struct {
-		Role string `json:"role"`
-	}
-
-	if err := c.ShouldBindJSON(&request); err != nil {
+	var req UpdateUserRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат данных"})
 		return
 	}
 
 	// Проверяем валидность роли
 	validRoles := map[string]bool{
-		"admin":     true,
-		"manager":   true,
-		"developer": true,
-		"tester":    true,
+		"project_manager": true,
+		"developer":      true,
 	}
 
-	if !validRoles[request.Role] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверная роль пользователя"})
+	if !validRoles[req.Role] {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": fmt.Sprintf("Неверная роль пользователя. Допустимые роли: %v", getValidRoles()),
+		})
 		return
 	}
 
-	// Обновляем настройки пользователя
-	_, err = app.db.Exec(context.Background(), `
-		UPDATE user_settings 
-		SET us_role = $1, updated_at = CURRENT_TIMESTAMP
-		WHERE us_user_id = $2
-	`, request.Role, userID)
+	// Обновляем роль пользователя в БД
+	query := `
+		INSERT INTO user_settings (us_user_id, us_role)
+		VALUES ($1, $2)
+		ON CONFLICT (us_user_id) 
+		DO UPDATE SET 
+			us_role = $2,
+			updated_at = CURRENT_TIMESTAMP
+	`
 
+	_, err := h.app.db.Exec(context.Background(), query, userID, req.Role)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при обновлении настроек пользователя"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка обновления роли пользователя"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Настройки пользователя успешно обновлены"})
+	c.JSON(http.StatusOK, gin.H{"message": "Роль пользователя успешно обновлена"})
 }
 
-// DeleteUserSettings удаляет настройки пользователя
-func (app *application) DeleteUserSettings(c *gin.Context) {
-	userID, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID пользователя"})
-		return
-	}
-
-	_, err = app.db.Exec(context.Background(), `
-		DELETE FROM user_settings 
-		WHERE us_user_id = $1
-	`, userID)
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при удалении настроек пользователя"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Настройки пользователя успешно удалены"})
-}
-
-// GetAllUserSettings получает настройки всех пользователей
-func (app *application) GetAllUserSettings(c *gin.Context) {
-	rows, err := app.db.Query(context.Background(), `
-		SELECT us_id, us_user_id, us_role, us_status, created_at, updated_at 
-		FROM user_settings
-	`)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при получении настроек пользователей"})
-		return
-	}
-	defer rows.Close()
-
-	var settings []models.UserSettings
-	for rows.Next() {
-		var s models.UserSettings
-		err := rows.Scan(
-			&s.UsID,
-			&s.UsUserID,
-			&s.UsRole,
-			&s.UsStatus,
-			&s.CreatedAt,
-			&s.UpdatedAt,
-		)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при чтении настроек пользователя"})
-			return
-		}
-		settings = append(settings, s)
-	}
-
-	c.JSON(http.StatusOK, settings)
+func getValidRoles() []string {
+	return []string{"project_manager", "developer"}
 }

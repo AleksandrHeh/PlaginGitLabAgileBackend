@@ -33,20 +33,22 @@ func main() {
 	}
 	defer db.Close()
 
+	app := &application{
+		errorLog: errorLog,
+		infoLog:  infoLog,
+		models:   &pgsql.PullIncludes{DB: db},
+		db:       db,
+	}
+
 	oauthHandler := &OAuthHandler{
 		clientID:      "9feaef0a6c56d9765985fa701db9c1dfd332389c865c44baa94b916d6b080712",
 		clientSecret:  "gloas-22f4423835a6b9d937ec329fb9496e4e6f1bef96205d7a03bcb9bec59b4779ca",
 		redirectURI:   "http://localhost:8080/oauth/callback",
 		gitlabBaseURL: "http://localhost",
+		app:           app,
 	}
 
-	app := &application{
-		errorLog:     errorLog,
-		infoLog:      infoLog,
-		oauthHandler: oauthHandler,
-		models:       &pgsql.PullIncludes{DB: db},
-		db:           db,
-	}
+	app.oauthHandler = oauthHandler
 
 	router := app.routes()
 
@@ -89,14 +91,19 @@ func (app *application) routes() *gin.Engine {
 		c.Next()
 	})
 
-	// Маршруты для GitLab OAuth
-	router.GET("/api/gitlab/auth", app.oauthHandler.GitLabAuthHandler)
-	router.GET("/api/gitlab/callback", app.oauthHandler.GitLabCallbackHandler)
-	router.GET("/api/gitlab/projects", app.oauthHandler.GitLabProjectsHandler)
-	router.GET("/api/gitlab/projects/:id", app.oauthHandler.GitLabProjectHandler)
-	router.GET("/api/gitlab/projects/:id/issues", app.oauthHandler.GitLabProjectIssuesHandler)
-	router.GET("/api/users", app.oauthHandler.GitLabMembersHandler)
-	router.POST("/api/gitlab/projects/:id/issues", app.oauthHandler.CreateGitLabIssue)
+	// Маршруты для GitLab
+	gitlab := router.Group("/api/gitlab")
+	{
+		gitlab.GET("/auth", app.oauthHandler.GitLabAuthHandler)
+		gitlab.GET("/callback", app.oauthHandler.GitLabCallbackHandler)
+		gitlab.GET("/projects", app.oauthHandler.GitLabProjectsHandler)
+		gitlab.GET("/projects/:id", app.oauthHandler.GitLabProjectHandler)
+		gitlab.GET("/projects/:id/issues", app.oauthHandler.GitLabProjectIssuesHandler)
+		gitlab.GET("/projects/:id/members", app.oauthHandler.GitLabProjectMembersHandler)
+		gitlab.GET("/members", app.oauthHandler.GitLabMembersHandler)
+		gitlab.POST("/projects/:id/issues", app.oauthHandler.CreateGitLabIssue)
+		gitlab.PUT("/users/:id/role", app.oauthHandler.UpdateUserRoleHandler)
+	}
 
 	// Маршруты для проектов
 	router.POST("/api/projects", app.oauthHandler.SaveProjectMetadata)
@@ -113,11 +120,5 @@ func (app *application) routes() *gin.Engine {
 	// Маршрут для GitLab вебхуков
 	router.POST("/api/webhooks/gitlab", app.HandleGitLabWebhook)
 
-	// Маршруты для настроек пользователей
-	router.GET("/users/settings", app.GetAllUserSettings)
-	router.GET("/users/:id/settings", app.GetUserSettings)
-	router.PUT("/users/:id/settings", app.UpdateUserSettings)
-	router.DELETE("/users/:id/settings", app.DeleteUserSettings)
-
 	return router
-}
+} 
