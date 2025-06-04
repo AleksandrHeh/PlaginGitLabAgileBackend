@@ -16,6 +16,7 @@ type application struct {
 	infoLog      *log.Logger
 	oauthHandler *OAuthHandler
 	models       *pgsql.PullIncludes
+	db           *pgxpool.Pool
 }
 
 func main() {
@@ -44,6 +45,7 @@ func main() {
 		infoLog:      infoLog,
 		oauthHandler: oauthHandler,
 		models:       &pgsql.PullIncludes{DB: db},
+		db:           db,
 	}
 
 	router := app.routes()
@@ -110,6 +112,12 @@ func (app *application) routes() *gin.Engine {
 
 	// Маршрут для GitLab вебхуков
 	router.POST("/api/webhooks/gitlab", app.HandleGitLabWebhook)
+
+	// Маршруты для настроек пользователей
+	router.GET("/users/settings", app.GetAllUserSettings)
+	router.GET("/users/:id/settings", app.GetUserSettings)
+	router.PUT("/users/:id/settings", app.UpdateUserSettings)
+	router.DELETE("/users/:id/settings", app.DeleteUserSettings)
 
 	return router
 }

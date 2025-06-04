@@ -590,7 +590,7 @@ func (pl *PullIncludes) UpdateSprintIssueAssignee(sprintID, issueID, assigneeID 
 
 func (pl *PullIncludes) GetSprintIDByIssueID(issueID int) (int, error) {
 	var sprintID int
-	query := "SELECT spt_id FROM sprint_issues WHERE issue_id = $1"
+	query := "SELECT si_sprint_id FROM sprint_issues WHERE si_issue_id = $1"
 	err := pl.DB.QueryRow(context.Background(), query, issueID).Scan(&sprintID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get sprint ID for issue %d: %w", issueID, err)

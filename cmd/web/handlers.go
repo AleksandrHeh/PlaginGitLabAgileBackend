@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -1171,4 +1173,151 @@ func (app *application) completeSprint(c *gin.Context) {
 		"status": "success",
 		"message": "Спринт успешно завершен",
 	})
+}
+
+// GetUserSettings получает настройки пользователя
+func (app *application) GetUserSettings(c *gin.Context) {
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID пользователя"})
+		return
+	}
+
+	// Получаем настройки пользователя из БД
+	var settings models.UserSettings
+	err = app.db.QueryRow(context.Background(), `
+		SELECT us_id, us_user_id, us_role, us_status, created_at, updated_at 
+		FROM user_settings 
+		WHERE us_user_id = $1
+	`, userID).Scan(
+		&settings.UsID,
+		&settings.UsUserID,
+		&settings.UsRole,
+		&settings.UsStatus,
+		&settings.CreatedAt,
+		&settings.UpdatedAt,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// Если настройки не найдены, создаем их с дефолтными значениями
+			settings = models.UserSettings{
+				UsUserID: userID,
+				UsRole:   "developer",
+				UsStatus: 1,
+			}
+			_, err = app.db.Exec(context.Background(), `
+				INSERT INTO user_settings (us_user_id, us_role, us_status)
+				VALUES ($1, $2, $3)
+			`, settings.UsUserID, settings.UsRole, settings.UsStatus)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при создании настроек пользователя"})
+				return
+			}
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при получении настроек пользователя"})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, settings)
+}
+
+// UpdateUserSettings обновляет настройки пользователя
+func (app *application) UpdateUserSettings(c *gin.Context) {
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID пользователя"})
+		return
+	}
+
+	var request struct {
+		Role string `json:"role"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат данных"})
+		return
+	}
+
+	// Проверяем валидность роли
+	validRoles := map[string]bool{
+		"admin":     true,
+		"manager":   true,
+		"developer": true,
+		"tester":    true,
+	}
+
+	if !validRoles[request.Role] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверная роль пользователя"})
+		return
+	}
+
+	// Обновляем настройки пользователя
+	_, err = app.db.Exec(context.Background(), `
+		UPDATE user_settings 
+		SET us_role = $1, updated_at = CURRENT_TIMESTAMP
+		WHERE us_user_id = $2
+	`, request.Role, userID)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при обновлении настроек пользователя"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Настройки пользователя успешно обновлены"})
+}
+
+// DeleteUserSettings удаляет настройки пользователя
+func (app *application) DeleteUserSettings(c *gin.Context) {
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID пользователя"})
+		return
+	}
+
+	_, err = app.db.Exec(context.Background(), `
+		DELETE FROM user_settings 
+		WHERE us_user_id = $1
+	`, userID)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при удалении настроек пользователя"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Настройки пользователя успешно удалены"})
+}
+
+// GetAllUserSettings получает настройки всех пользователей
+func (app *application) GetAllUserSettings(c *gin.Context) {
+	rows, err := app.db.Query(context.Background(), `
+		SELECT us_id, us_user_id, us_role, us_status, created_at, updated_at 
+		FROM user_settings
+	`)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при получении настроек пользователей"})
+		return
+	}
+	defer rows.Close()
+
+	var settings []models.UserSettings
+	for rows.Next() {
+		var s models.UserSettings
+		err := rows.Scan(
+			&s.UsID,
+			&s.UsUserID,
+			&s.UsRole,
+			&s.UsStatus,
+			&s.CreatedAt,
+			&s.UpdatedAt,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при чтении настроек пользователя"})
+			return
+		}
+		settings = append(settings, s)
+	}
+
+	c.JSON(http.StatusOK, settings)
 }

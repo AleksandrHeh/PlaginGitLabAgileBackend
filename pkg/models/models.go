@@ -54,6 +54,15 @@ type SprintIssue struct {
     MRID        *int      `json:"mr_id,omitempty"`
 }
 
+type UserSettings struct {
+    UsID        int       `db:"us_id"`
+    UsUserID    int       `db:"us_user_id"`
+    UsRole      string    `db:"us_role"`
+    UsStatus    int       `db:"us_status"`
+    CreatedAt   time.Time `db:"created_at"`
+    UpdatedAt   time.Time `db:"updated_at"`
+}
+
 type Models interface {
 	GetSprintIssue(sprintID, issueID int) (*SprintIssue, error)
 }
