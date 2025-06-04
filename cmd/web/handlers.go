@@ -1302,3 +1302,118 @@ func (h *OAuthHandler) UpdateUserRoleHandler(c *gin.Context) {
 func getValidRoles() []string {
 	return []string{"project_manager", "developer"}
 }
+
+type CreateGitLabProjectRequest struct {
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+	Visibility  string `json:"visibility" binding:"required"`
+	StartDate   string `json:"start_date" binding:"required"`
+	EndDate     string `json:"end_date" binding:"required"`
+}
+
+func (h *OAuthHandler) CreateGitLabProject(c *gin.Context) {
+	token := c.GetHeader("Authorization")
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Токен отсутствует"})
+		return
+	}
+
+	var req CreateGitLabProjectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.app.errorLog.Printf("Ошибка валидации данных: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Неверный формат данных: %v", err)})
+		return
+	}
+
+	// Логируем полученные данные
+	h.app.infoLog.Printf("Получен запрос на создание проекта: %+v", req)
+
+	// Формируем URL для создания проекта в GitLab
+	url := fmt.Sprintf("%s/api/v4/projects", h.gitlabBaseURL)
+
+	// Создаем тело запроса
+	projectData := map[string]interface{}{
+		"name":                 req.Name,
+		"description":          req.Description,
+		"visibility":           req.Visibility,
+		"initialize_with_readme": true,
+		"default_branch":       "main",
+		"path":                fmt.Sprintf("%s-%d", strings.ToLower(strings.ReplaceAll(req.Name, " ", "-")), time.Now().Unix()),
+	}
+
+	jsonData, err := json.Marshal(projectData)
+	if err != nil {
+		h.app.errorLog.Printf("Ошибка маршалинга данных: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка создания запроса"})
+		return
+	}
+
+	// Логируем данные, отправляемые в GitLab
+	h.app.infoLog.Printf("Отправляем данные в GitLab: %s", string(jsonData))
+
+	// Создаем HTTP запрос
+	request, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		h.app.errorLog.Printf("Ошибка создания HTTP запроса: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка создания запроса"})
+		return
+	}
+
+	request.Header.Set("Authorization", token)
+	request.Header.Set("Content-Type", "application/json")
+
+	// Отправляем запрос
+	client := &http.Client{}
+	resp, err := client.Do(request)
+	if err != nil {
+		h.app.errorLog.Printf("Ошибка отправки запроса в GitLab: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка запроса к GitLab"})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Читаем ответ
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		h.app.errorLog.Printf("Ошибка чтения ответа от GitLab: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка чтения ответа"})
+		return
+	}
+
+	// Логируем ответ от GitLab
+	h.app.infoLog.Printf("Ответ от GitLab (статус %d): %s", resp.StatusCode, string(body))
+
+	if resp.StatusCode != http.StatusCreated {
+		var errorResponse map[string]interface{}
+		if err := json.Unmarshal(body, &errorResponse); err == nil {
+			h.app.errorLog.Printf("Ошибка от GitLab: %v", errorResponse)
+			c.JSON(resp.StatusCode, gin.H{"error": errorResponse["message"]})
+		} else {
+			h.app.errorLog.Printf("Неизвестная ошибка от GitLab: %s", string(body))
+			c.JSON(resp.StatusCode, gin.H{"error": string(body)})
+		}
+		return
+	}
+
+	// Парсим ответ от GitLab
+	var gitlabProject map[string]interface{}
+	if err := json.Unmarshal(body, &gitlabProject); err != nil {
+		h.app.errorLog.Printf("Ошибка парсинга ответа от GitLab: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка парсинга ответа"})
+		return
+	}
+
+	// Возвращаем успешный ответ
+	c.JSON(http.StatusCreated, gin.H{
+		"message": "Проект успешно создан",
+		"project": gin.H{
+			"gitlab_id":   gitlabProject["id"],
+			"name":        req.Name,
+			"description": req.Description,
+			"start_date":  req.StartDate,
+			"end_date":    req.EndDate,
+			"visibility":  req.Visibility,
+			"web_url":     gitlabProject["web_url"],
+		},
+	})
+}
