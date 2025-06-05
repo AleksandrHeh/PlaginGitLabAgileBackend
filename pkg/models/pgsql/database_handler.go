@@ -686,3 +686,17 @@ func (pl *PullIncludes) CompleteSprint(sprintID int) error {
 
     return nil
 }
+
+// UpdateIssueStatus обновляет статус задачи в спринте
+func (pl *PullIncludes) UpdateIssueStatus(sprintID, issueID int, status string) error {
+    query := `
+        UPDATE sprint_issues 
+        SET si_agile_status = $1 
+        WHERE si_sprint_id = $2 AND si_issue_id = $3
+    `
+    _, err := pl.DB.Exec(context.Background(), query, status, sprintID, issueID)
+    if err != nil {
+        return fmt.Errorf("не удалось обновить статус задачи: %w", err)
+    }
+    return nil
+}

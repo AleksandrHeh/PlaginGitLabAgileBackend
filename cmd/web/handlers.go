@@ -595,44 +595,52 @@ func (app *application) getSprint(c *gin.Context) {
 
 // getSprintIssues получает задачи спринта и синхронизирует их статусы с GitLab
 func (app *application) getSprintIssues(c *gin.Context) {
-	sprintID, err := strconv.Atoi(c.Param("sprintId"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID спринта"})
-		return
-	}
+    sprintID, err := strconv.Atoi(c.Param("sprintId"))
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID спринта"})
+        return
+    }
 
-	// Получаем токен из заголовка
-	token := c.GetHeader("Authorization")
-	if token == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Токен отсутствует"})
-		return
-	}
+    // Получаем токен из заголовка
+    token := c.GetHeader("Authorization")
+    if token == "" {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "Токен отсутствует"})
+        return
+    }
 
-	// Получаем ID проекта из параметров запроса
-	projectID, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID проекта"})
-		return
-	}
+    // Получаем ID проекта из параметров запроса
+    projectID, err := strconv.Atoi(c.Param("id"))
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID проекта"})
+        return
+    }
 
-	// Синхронизируем статусы задач с GitLab
-	if err := app.syncAllIssuesWithGitLab(sprintID, projectID, token); err != nil {
-		app.errorLog.Printf("Ошибка синхронизации задач с GitLab: %v", err)
-		// Продолжаем выполнение даже при ошибке синхронизации
-	}
+    // Синхронизируем статусы задач с GitLab
+    if err := app.syncAllIssuesWithGitLab(sprintID, projectID, token); err != nil {
+        app.errorLog.Printf("Ошибка синхронизации задач с GitLab: %v", err)
+        // Продолжаем выполнение даже при ошибке синхронизации
+    }
 
-	// Получаем обновленные задачи
-	issues, err := app.models.GetSprintIssues(sprintID)
-	if err != nil {
-		if err == models.ErrNoRecord {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Спринт или задачи не найдены"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка при получении задач: %v", err)})
-		return
-	}
+    // Получаем обновленные задачи
+    issues, err := app.models.GetSprintIssues(sprintID)
+    if err != nil {
+        if err == models.ErrNoRecord {
+            c.JSON(http.StatusNotFound, gin.H{"error": "Спринт или задачи не найдены"})
+            return
+        }
+        c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Ошибка при получении задач: %v", err)})
+        return
+    }
 
-	c.JSON(http.StatusOK, issues)
+    // Добавляем информацию о статусе для каждой задачи
+    for i := range issues {
+        // Если статус не установлен, устанавливаем "К выполнению"
+        if issues[i].Status == "" {
+            issues[i].Status = "К выполнению"
+        }
+    }
+
+    c.JSON(http.StatusOK, issues)
 }
 
 type UpdateIssueAssigneeRequest struct {
@@ -1765,4 +1773,51 @@ func (h *OAuthHandler) GetUsersHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, usersWithSettings)
+}
+
+func (app *application) updateIssueStatus(c *gin.Context) {
+	sprintID, err := strconv.Atoi(c.Param("sprintId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID спринта"})
+		return
+	}
+
+	issueID, err := strconv.Atoi(c.Param("issueId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID задачи"})
+		return
+	}
+
+	var req struct {
+		Status string `json:"status" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат данных"})
+		return
+	}
+
+	// Проверяем валидность статуса
+	validStatuses := []string{"К выполнению", "В работе", "На проверке", "Готово", "Заблокировано"}
+	isValid := false
+	for _, status := range validStatuses {
+		if status == req.Status {
+			isValid = true
+			break
+		}
+	}
+
+	if !isValid {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный статус задачи"})
+		return
+	}
+
+	err = app.models.UpdateIssueStatus(sprintID, issueID, req.Status)
+	if err != nil {
+		app.errorLog.Printf("Ошибка обновления статуса задачи: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Не удалось обновить статус задачи"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
