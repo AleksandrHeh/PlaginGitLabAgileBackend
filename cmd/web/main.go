@@ -104,7 +104,13 @@ func (app *application) routes() *gin.Engine {
 		gitlab.POST("/projects/:id/issues", app.oauthHandler.CreateGitLabIssue)
 		gitlab.PUT("/users/:id/role", app.oauthHandler.UpdateUserRoleHandler)
 		gitlab.POST("/projects", app.oauthHandler.CreateGitLabProject)
+		gitlab.PUT("/projects/:id", app.oauthHandler.UpdateGitLabProject)
+		gitlab.DELETE("/projects/:id", app.oauthHandler.DeleteGitLabProject)
+		gitlab.DELETE("/projects/:id/issues/:issueId", app.oauthHandler.DeleteGitLabIssue)
 	}
+
+	// User routes
+	router.GET("/api/users", app.oauthHandler.GetUsersHandler)
 
 	// Маршруты для проектов
 	router.POST("/api/projects", app.oauthHandler.SaveProjectMetadata)

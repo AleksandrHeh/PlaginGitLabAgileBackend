@@ -6,9 +6,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -519,38 +521,58 @@ type AddIssueToSprintRequest struct {
 	IssueID     int    `json:"issue_id"`
 	StoryPoints int    `json:"story_points"`
 	Priority    string `json:"priority"`
-	NameIssue string   `json:"name_issue"`
+	NameIssue   string `json:"name_issue"`
 	DescriptionIssue string `json:"description_issue"`
 }
 
 func (app *application) addIssueToSprint(c *gin.Context) {
 	sprintID, err := strconv.Atoi(c.Param("sprintId"))
 	if err != nil {
+		app.errorLog.Printf("Неверный формат ID спринта: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID спринта"})
+		return
+	}
+
+	// Проверяем существование спринта
+	_, err = app.models.GetSprint(sprintID)
+	if err != nil {
+		app.errorLog.Printf("Ошибка получения спринта: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Спринт не найден"})
 		return
 	}
 
 	var req AddIssueToSprintRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		app.errorLog.Printf("Ошибка парсинга JSON: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат данных"})
 		return
 	}
-	fmt.Print(req)
 
-	// Используем ID спринта из URL вместо тела запроса
-	req.SprintID = sprintID
+	app.infoLog.Printf("Получен запрос на добавление задачи в спринт: sprintID=%d, issueID=%d", 
+		sprintID, req.IssueID)
 
 	if req.IssueID == 0 {
+		app.errorLog.Printf("Отсутствует ID задачи в запросе")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Необходимо указать ID задачи"})
 		return
 	}
 
-	err = app.models.AddIssueToSprint(req.SprintID, req.IssueID, req.StoryPoints, req.Priority, req.NameIssue, req.DescriptionIssue)
+	// Проверяем, не добавлена ли уже задача в спринт
+	existingIssue, err := app.models.GetSprintIssue(sprintID, req.IssueID)
+	if err == nil && existingIssue != nil {
+		app.errorLog.Printf("Задача %d уже добавлена в спринт %d", req.IssueID, sprintID)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Задача уже добавлена в этот спринт"})
+		return
+	}
+
+	err = app.models.AddIssueToSprint(sprintID, req.IssueID, req.StoryPoints, req.Priority, req.NameIssue, req.DescriptionIssue)
 	if err != nil {
+		app.errorLog.Printf("Ошибка добавления задачи в спринт: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
+	app.infoLog.Printf("Задача %d успешно добавлена в спринт %d", req.IssueID, sprintID)
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
 
@@ -1311,6 +1333,33 @@ type CreateGitLabProjectRequest struct {
 	EndDate     string `json:"end_date" binding:"required"`
 }
 
+// transliterate преобразует кириллицу в латиницу
+func transliterate(s string) string {
+	translitMap := map[rune]string{
+		'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'е': "e", 'ё': "yo",
+		'ж': "zh", 'з': "z", 'и': "i", 'й': "y", 'к': "k", 'л': "l", 'м': "m",
+		'н': "n", 'о': "o", 'п': "p", 'р': "r", 'с': "s", 'т': "t", 'у': "u",
+		'ф': "f", 'х': "h", 'ц': "ts", 'ч': "ch", 'ш': "sh", 'щ': "sch", 'ъ': "",
+		'ы': "y", 'ь': "", 'э': "e", 'ю': "yu", 'я': "ya",
+		'А': "A", 'Б': "B", 'В': "V", 'Г': "G", 'Д': "D", 'Е': "E", 'Ё': "Yo",
+		'Ж': "Zh", 'З': "Z", 'И': "I", 'Й': "Y", 'К': "K", 'Л': "L", 'М': "M",
+		'Н': "N", 'О': "O", 'П': "P", 'Р': "R", 'С': "S", 'Т': "T", 'У': "U",
+		'Ф': "F", 'Х': "H", 'Ц': "Ts", 'Ч': "Ch", 'Ш': "Sh", 'Щ': "Sch", 'Ъ': "",
+		'Ы': "Y", 'Ь': "", 'Э': "E", 'Ю': "Yu", 'Я': "Ya",
+	}
+
+	var result strings.Builder
+	for _, r := range s {
+		if val, ok := translitMap[r]; ok {
+			result.WriteString(val)
+		} else {
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
+}
+
+// CreateGitLabProject создает новый проект в GitLab
 func (h *OAuthHandler) CreateGitLabProject(c *gin.Context) {
 	token := c.GetHeader("Authorization")
 	if token == "" {
@@ -1331,6 +1380,21 @@ func (h *OAuthHandler) CreateGitLabProject(c *gin.Context) {
 	// Формируем URL для создания проекта в GitLab
 	url := fmt.Sprintf("%s/api/v4/projects", h.gitlabBaseURL)
 
+	// Генерируем безопасный путь для проекта
+	safePath := strings.ToLower(transliterate(req.Name))
+	// Заменяем пробелы и специальные символы на дефисы
+	safePath = strings.ReplaceAll(safePath, " ", "-")
+	safePath = strings.ReplaceAll(safePath, "_", "-")
+	// Удаляем все символы кроме букв, цифр и дефисов
+	reg := regexp.MustCompile(`[^a-z0-9-]`)
+	safePath = reg.ReplaceAllString(safePath, "")
+	// Удаляем множественные дефисы
+	safePath = strings.ReplaceAll(safePath, "--", "-")
+	// Удаляем дефисы в начале и конце
+	safePath = strings.Trim(safePath, "-")
+	// Добавляем временную метку для уникальности
+	safePath = fmt.Sprintf("%s-%d", safePath, time.Now().Unix())
+
 	// Создаем тело запроса
 	projectData := map[string]interface{}{
 		"name":                 req.Name,
@@ -1338,7 +1402,7 @@ func (h *OAuthHandler) CreateGitLabProject(c *gin.Context) {
 		"visibility":           req.Visibility,
 		"initialize_with_readme": true,
 		"default_branch":       "main",
-		"path":                fmt.Sprintf("%s-%d", strings.ToLower(strings.ReplaceAll(req.Name, " ", "-")), time.Now().Unix()),
+		"path":                safePath,
 	}
 
 	jsonData, err := json.Marshal(projectData)
@@ -1416,4 +1480,289 @@ func (h *OAuthHandler) CreateGitLabProject(c *gin.Context) {
 			"web_url":     gitlabProject["web_url"],
 		},
 	})
+}
+
+type UpdateProjectRequest struct {
+	Description string `json:"description"`
+}
+
+func (h *OAuthHandler) UpdateGitLabProject(c *gin.Context) {
+	token := c.GetHeader("Authorization")
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Токен отсутствует"})
+		return
+	}
+
+	projectID := c.Param("id")
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID проекта не указан"})
+		return
+	}
+
+	var req UpdateProjectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.app.errorLog.Printf("Ошибка валидации данных: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Неверный формат данных: %v", err)})
+		return
+	}
+
+	// Формируем URL для обновления проекта в GitLab
+	url := fmt.Sprintf("%s/api/v4/projects/%s", h.gitlabBaseURL, projectID)
+
+	// Создаем тело запроса
+	projectData := map[string]interface{}{
+		"description": req.Description,
+	}
+
+	jsonData, err := json.Marshal(projectData)
+	if err != nil {
+		h.app.errorLog.Printf("Ошибка маршалинга данных: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка создания запроса"})
+		return
+	}
+
+	// Создаем HTTP запрос
+	request, err := http.NewRequest("PUT", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		h.app.errorLog.Printf("Ошибка создания HTTP запроса: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка создания запроса"})
+		return
+	}
+
+	request.Header.Set("Authorization", token)
+	request.Header.Set("Content-Type", "application/json")
+
+	// Отправляем запрос
+	client := &http.Client{}
+	resp, err := client.Do(request)
+	if err != nil {
+		h.app.errorLog.Printf("Ошибка отправки запроса в GitLab: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка запроса к GitLab"})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Читаем ответ
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		h.app.errorLog.Printf("Ошибка чтения ответа от GitLab: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка чтения ответа"})
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		var errorResponse map[string]interface{}
+		if err := json.Unmarshal(body, &errorResponse); err == nil {
+			h.app.errorLog.Printf("Ошибка от GitLab: %v", errorResponse)
+			c.JSON(resp.StatusCode, gin.H{"error": errorResponse["message"]})
+		} else {
+			h.app.errorLog.Printf("Неизвестная ошибка от GitLab: %s", string(body))
+			c.JSON(resp.StatusCode, gin.H{"error": string(body)})
+		}
+		return
+	}
+
+	// Парсим ответ от GitLab
+	var gitlabProject map[string]interface{}
+	if err := json.Unmarshal(body, &gitlabProject); err != nil {
+		h.app.errorLog.Printf("Ошибка парсинга ответа от GitLab: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка парсинга ответа"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Описание проекта успешно обновлено",
+		"project": gin.H{
+			"gitlab_id":   gitlabProject["id"],
+			"name":        gitlabProject["name"],
+			"description": gitlabProject["description"],
+			"web_url":     gitlabProject["web_url"],
+		},
+	})
+}
+
+func (h *OAuthHandler) DeleteGitLabProject(c *gin.Context) {
+	token := c.GetHeader("Authorization")
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Токен отсутствует"})
+		return
+	}
+
+	projectID := c.Param("id")
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID проекта не указан"})
+		return
+	}
+
+	// Формируем URL для удаления проекта в GitLab
+	url := fmt.Sprintf("%s/api/v4/projects/%s", h.gitlabBaseURL, projectID)
+
+	// Создаем HTTP запрос
+	request, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		h.app.errorLog.Printf("Ошибка создания HTTP запроса: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка создания запроса"})
+		return
+	}
+
+	request.Header.Set("Authorization", token)
+
+	// Отправляем запрос
+	client := &http.Client{}
+	resp, err := client.Do(request)
+	if err != nil {
+		h.app.errorLog.Printf("Ошибка отправки запроса в GitLab: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка запроса к GitLab"})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(resp.Body)
+		var errorResponse map[string]interface{}
+		if err := json.Unmarshal(body, &errorResponse); err == nil {
+			h.app.errorLog.Printf("Ошибка от GitLab: %v", errorResponse)
+			c.JSON(resp.StatusCode, gin.H{"error": errorResponse["message"]})
+		} else {
+			h.app.errorLog.Printf("Неизвестная ошибка от GitLab: %s", string(body))
+			c.JSON(resp.StatusCode, gin.H{"error": string(body)})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Проект успешно удален",
+	})
+}
+
+// DeleteGitLabIssue удаляет задачу через GitLab API
+func (h *OAuthHandler) DeleteGitLabIssue(c *gin.Context) {
+	projectID := c.Param("id")
+	issueID := c.Param("issueId")
+	token := c.GetHeader("Authorization")
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Отсутствует токен авторизации"})
+		return
+	}
+
+	// Удаляем префикс "Bearer " из токена, если он есть
+	token = strings.TrimPrefix(token, "Bearer ")
+
+	url := fmt.Sprintf("%s/api/v4/projects/%s/issues/%s", h.gitlabBaseURL, projectID, issueID)
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при создании запроса"})
+		return
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при выполнении запроса"})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		c.JSON(resp.StatusCode, gin.H{"error": fmt.Sprintf("Ошибка при удалении задачи: %s", string(body))})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
+// GetUsersHandler возвращает список всех пользователей
+func (h *OAuthHandler) GetUsersHandler(c *gin.Context) {
+	token := c.GetHeader("Authorization")
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Токен отсутствует"})
+		return
+	}
+
+	// Получаем список пользователей из GitLab
+	url := fmt.Sprintf("%s/api/v4/users", h.gitlabBaseURL)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка создания запроса"})
+		return
+	}
+	req.Header.Set("Authorization", token)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка запроса к GitLab"})
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка чтения ответа"})
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		var errorResponse map[string]interface{}
+		if err := json.Unmarshal(body, &errorResponse); err == nil {
+			c.JSON(resp.StatusCode, gin.H{"error": errorResponse["message"]})
+		} else {
+			c.JSON(resp.StatusCode, gin.H{"error": string(body)})
+		}
+		return
+	}
+
+	var users []map[string]interface{}
+	if err := json.Unmarshal(body, &users); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка парсинга данных"})
+		return
+	}
+
+	// Получаем настройки пользователей из локальной БД
+	var usersWithSettings []map[string]interface{}
+	for _, user := range users {
+		userID := int(user["id"].(float64))
+		
+		// Получаем настройки пользователя из локальной БД
+		var settings struct {
+			Role string `json:"role"`
+		}
+		
+		// Получаем настройки пользователя из БД
+		err := h.app.db.QueryRow(context.Background(), `
+			SELECT us_role 
+			FROM user_settings 
+			WHERE us_user_id = $1
+		`, userID).Scan(&settings.Role)
+		
+		// Если настройки не найдены, используем значение по умолчанию
+		if err != nil {
+			if err == sql.ErrNoRows {
+				settings.Role = "developer"
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка получения настроек пользователя"})
+				return
+			}
+		}
+		
+		// Объединяем данные из GitLab и локальной БД
+		userWithSettings := map[string]interface{}{
+			"id": user["id"],
+			"name": user["name"],
+			"username": user["username"],
+			"email": user["email"],
+			"avatar_url": user["avatar_url"],
+			"created_at": user["created_at"],
+			"userSettings": map[string]interface{}{
+				"us_role": settings.Role,
+			},
+		}
+		
+		usersWithSettings = append(usersWithSettings, userWithSettings)
+	}
+
+	c.JSON(http.StatusOK, usersWithSettings)
 }
