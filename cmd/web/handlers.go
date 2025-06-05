@@ -1821,3 +1821,30 @@ func (app *application) updateIssueStatus(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
+
+func (app *application) deleteSprintIssue(c *gin.Context) {
+	sprintID := c.Param("sprintID")
+	issueID := c.Param("issueID")
+
+	sprintIDInt, err := strconv.Atoi(sprintID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid sprint ID"})
+		return
+	}
+
+	issueIDInt, err := strconv.Atoi(issueID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid issue ID"})
+		return
+	}
+
+	// Delete the issue from the sprint
+	err = app.models.DeleteSprintIssue(sprintIDInt, issueIDInt)
+	if err != nil {
+		app.errorLog.Printf("Error deleting sprint issue: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete sprint issue"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Sprint issue deleted successfully"})
+}

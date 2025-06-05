@@ -123,6 +123,12 @@ func (app *application) routes() *gin.Engine {
 	router.PUT("/api/projects/:id/sprints/:sprintId/issues/assignee", app.updateIssueAssignee)
 	router.PUT("/api/projects/:id/sprints/:sprintId/complete", app.completeSprint)
 
+	// Sprint routes
+	sprintRoutes := router.Group("/api/projects/:projectID/sprints/:sprintID")
+	{
+		sprintRoutes.DELETE("/issues/:issueID", app.deleteSprintIssue)
+	}
+
 	// Маршрут для GitLab вебхуков
 	router.POST("/api/webhooks/gitlab", app.HandleGitLabWebhook)
 

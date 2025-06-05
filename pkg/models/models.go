@@ -65,4 +65,5 @@ type UserSettings struct {
 
 type Models interface {
 	GetSprintIssue(sprintID, issueID int) (*SprintIssue, error)
+	DeleteSprintIssue(sprintID, issueID int) error
 }

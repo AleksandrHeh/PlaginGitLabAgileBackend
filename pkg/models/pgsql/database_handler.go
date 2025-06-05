@@ -700,3 +700,17 @@ func (pl *PullIncludes) UpdateIssueStatus(sprintID, issueID int, status string) 
     }
     return nil
 }
+
+func (pl *PullIncludes) DeleteSprintIssue(sprintID, issueID int) error {
+	query := `
+		DELETE FROM sprint_issues 
+		WHERE si_sprint_id = $1 AND si_issue_id = $2
+	`
+	
+	_, err := pl.DB.Exec(context.Background(), query, sprintID, issueID)
+	if err != nil {
+		return fmt.Errorf("error deleting sprint issue: %v", err)
+	}
+	
+	return nil
+}
