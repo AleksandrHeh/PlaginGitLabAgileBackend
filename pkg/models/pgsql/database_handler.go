@@ -263,7 +263,7 @@ func (pl *PullIncludes) CreateSprint(title string, startDate, endDate time.Time,
 // GetSprints получает список спринтов для проекта
 func (pl *PullIncludes) GetSprints(projectID int) ([]Sprint, error) {
 	query := `
-		SELECT spt_id, spt_title, spt_start_date, spt_end_date, spt_goals, spt_project_id, created_at, updated_at
+		SELECT spt_id, spt_title, spt_start_date, spt_end_date, spt_goals, spt_project_id, created_at, updated_at, spt_status
 		FROM sprint
 		WHERE spt_project_id = $1
 		ORDER BY spt_start_date DESC
@@ -287,6 +287,7 @@ func (pl *PullIncludes) GetSprints(projectID int) ([]Sprint, error) {
 			&sprint.SptProjectID,
 			&sprint.CreatedAt,
 			&sprint.UpdatedAt,
+			&sprint.SptStatus,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("ошибка при сканировании спринта: %v", err)

@@ -1299,6 +1299,7 @@ func (h *OAuthHandler) UpdateUserRoleHandler(c *gin.Context) {
 
 	// Проверяем валидность роли
 	validRoles := map[string]bool{
+		"administrator":   true,
 		"project_manager": true,
 		"developer":      true,
 	}

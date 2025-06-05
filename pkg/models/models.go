@@ -63,6 +63,15 @@ type UserSettings struct {
     UpdatedAt   time.Time `db:"updated_at"`
 }
 
+type Sprint struct {
+	SptID          int       `db:"spt_id"`
+	SptGoals       string    `db:"spt_goals"`
+	SptProjectID   int       `db:"spt_project_id"`
+	CreatedAt      time.Time `db:"created_at"`
+	UpdatedAt      time.Time `db:"updated_at"`
+	SptStatus      string    `db:"spt_status" json:"spt_status"`
+}
+
 type Models interface {
 	GetSprintIssue(sprintID, issueID int) (*SprintIssue, error)
 	DeleteSprintIssue(sprintID, issueID int) error
