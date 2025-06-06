@@ -35,64 +35,128 @@ type OAuthHandler struct {
 }
 
 func (h *OAuthHandler) GitLabAuthHandler(c *gin.Context) {
+	// Генерируем случайный state параметр для безопасности
+	state := fmt.Sprintf("%d", time.Now().UnixNano())
+	
+	// Сохраняем state в cookie
+	c.SetCookie("oauth_state", state, 3600, "/", "", false, true)
+	
+	// Формируем URL для авторизации
 	authURL := fmt.Sprintf(
-		"%s/oauth/authorize?client_id=%s&redirect_uri=%s&response_type=code&scope=api+read_api",
-		h.gitlabBaseURL, h.clientID, url.QueryEscape("http://localhost:8080/oauth/callback"),
+		"%s/oauth/authorize?client_id=%s&redirect_uri=%s&response_type=code&scope=api+read_api&state=%s",
+		h.gitlabBaseURL, h.clientID, url.QueryEscape(h.redirectURI), state,
 	)
-	fmt.Println("Redirect URI:", authURL)
+	
+	// Логируем информацию для отладки
+	fmt.Printf("GitLab Auth URL: %s\n", authURL)
+	fmt.Printf("Client ID: %s\n", h.clientID)
+	fmt.Printf("Redirect URI: %s\n", h.redirectURI)
+	fmt.Printf("GitLab Base URL: %s\n", h.gitlabBaseURL)
+	
 	c.Redirect(http.StatusTemporaryRedirect, authURL)
 }
 
 func (h *OAuthHandler) GitLabCallbackHandler(c *gin.Context) {
 	code := c.Query("code")
+	state := c.Query("state")
+	
 	if code == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Authorization code is missing"})
+		c.JSON(400, gin.H{"error": "Код авторизации отсутствует"})
 		return
 	}
 
-	tokenURL := fmt.Sprintf("%s/oauth/token", h.gitlabBaseURL)
-	formData := url.Values{
-		"client_id":     {h.clientID},
-		"client_secret": {h.clientSecret},
-		"code":          {code},
-		"grant_type":    {"authorization_code"},
-		"redirect_uri":  {h.redirectURI},
+	// Проверяем state из куки
+	storedState, err := c.Cookie("oauth_state")
+	if err != nil || storedState != state {
+		c.JSON(400, gin.H{"error": "Неверный state параметр"})
+		return
 	}
 
-	resp, err := http.PostForm(tokenURL, formData)
+	// Очищаем куки после проверки
+	c.SetCookie("oauth_state", "", -1, "/", "", false, true)
+
+	// Обмениваем код на токен
+	tokenURL := fmt.Sprintf("%s/oauth/token", h.gitlabBaseURL)
+	data := url.Values{}
+	data.Set("client_id", h.clientID)
+	data.Set("client_secret", h.clientSecret)
+	data.Set("code", code)
+	data.Set("grant_type", "authorization_code")
+	data.Set("redirect_uri", h.redirectURI)
+
+	resp, err := http.PostForm(tokenURL, data)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to exchange code for token"})
+		c.JSON(500, gin.H{"error": "Ошибка при обмене кода на токен"})
 		return
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
+		c.JSON(500, gin.H{"error": "Ошибка при чтении ответа"})
 		return
 	}
 
-	var tokenResponse struct {
+	var tokenResp struct {
 		AccessToken string `json:"access_token"`
+		Error       string `json:"error"`
 	}
-	if err := json.Unmarshal(body, &tokenResponse); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse token response"})
+
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		c.JSON(500, gin.H{"error": "Ошибка при разборе ответа"})
 		return
 	}
 
-	user, err := h.authenticateWithGitLab(tokenResponse.AccessToken)
+	if tokenResp.Error != "" {
+		c.JSON(400, gin.H{"error": tokenResp.Error})
+		return
+	}
+
+	// Получаем информацию о пользователе
+	userURL := fmt.Sprintf("%s/api/v4/user", h.gitlabBaseURL)
+	req, err := http.NewRequest("GET", userURL, nil)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Failed to authenticate with GitLab"})
+		c.JSON(500, gin.H{"error": "Ошибка при создании запроса"})
 		return
 	}
 
-	// Возвращаем данные пользователя и URL для перенаправления
-	c.JSON(http.StatusOK, gin.H{
-		"user":        user,
-		"token":       tokenResponse.AccessToken,
-		"redirectURL": "/home", // Указываем, куда перенаправить пользователя
+	req.Header.Set("Authorization", "Bearer "+tokenResp.AccessToken)
+	client := &http.Client{}
+	resp, err = client.Do(req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Ошибка при получении данных пользователя"})
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Ошибка при чтении ответа"})
+		return
+	}
+
+	var user struct {
+		ID       int    `json:"id"`
+		Username string `json:"username"`
+		Name     string `json:"name"`
+		Email    string `json:"email"`
+	}
+
+	if err := json.Unmarshal(body, &user); err != nil {
+		c.JSON(500, gin.H{"error": "Ошибка при разборе данных пользователя"})
+		return
+	}
+
+	// Устанавливаем токен в куки
+	c.SetCookie("gitlab_token", tokenResp.AccessToken, 3600, "/", "", false, true)
+
+	// Возвращаем данные пользователя и токен
+	c.JSON(200, gin.H{
+		"user": user,
+		"token": tokenResp.AccessToken,
 	})
 }
+
 func (h *OAuthHandler) authenticateWithGitLab(token string) (*GitLabUser, error) {
 	url := fmt.Sprintf("%s/api/v4/user", h.gitlabBaseURL)
 

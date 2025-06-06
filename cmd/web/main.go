@@ -40,11 +40,21 @@ func main() {
 		db:       db,
 	}
 
+	// Настройки OAuth для GitLab
+	// Важно: эти настройки должны соответствовать настройкам в GitLab
+	// 1. Войдите в GitLab как администратор
+	// 2. Перейдите в Admin Area -> Applications
+	// 3. Создайте новое приложение с настройками:
+	//    - Name: PlaginAgile
+	//    - Redirect URI: http://localhost:8080/oauth/callback
+	//    - Scopes: api, read_api
+	//    - Trusted: Yes
+	//    - Confidential: Yes
 	oauthHandler := &OAuthHandler{
-		clientID:      "9feaef0a6c56d9765985fa701db9c1dfd332389c865c44baa94b916d6b080712",
-		clientSecret:  "gloas-22f4423835a6b9d937ec329fb9496e4e6f1bef96205d7a03bcb9bec59b4779ca",
+		clientID:      "9feaef0a6c56d9765985fa701db9c1dfd332389c865c44baa94b916d6b080712", // Замените на новый Application ID
+		clientSecret:  "gloas-22f4423835a6b9d937ec329fb9496e4e6f1bef96205d7a03bcb9bec59b4779ca", // Замените на новый Secret
 		redirectURI:   "http://localhost:8080/oauth/callback",
-		gitlabBaseURL: "http://localhost:80",
+		gitlabBaseURL: "http://gitlab.example.com",
 		app:           app,
 	}
 
@@ -91,11 +101,13 @@ func (app *application) routes() *gin.Engine {
 		c.Next()
 	})
 
-	// Маршруты для GitLab
+	// Маршруты для GitLab OAuth
+	router.GET("/oauth/callback", app.oauthHandler.GitLabCallbackHandler)
+	router.GET("/api/gitlab/auth", app.oauthHandler.GitLabAuthHandler)
+
+	// Остальные маршруты GitLab
 	gitlab := router.Group("/api/gitlab")
 	{
-		gitlab.GET("/auth", app.oauthHandler.GitLabAuthHandler)
-		gitlab.GET("/callback", app.oauthHandler.GitLabCallbackHandler)
 		gitlab.GET("/projects", app.oauthHandler.GitLabProjectsHandler)
 		gitlab.GET("/projects/:id", app.oauthHandler.GitLabProjectHandler)
 		gitlab.GET("/projects/:id/issues", app.oauthHandler.GitLabProjectIssuesHandler)
@@ -109,6 +121,7 @@ func (app *application) routes() *gin.Engine {
 		gitlab.DELETE("/projects/:id/issues/:issueId", app.oauthHandler.DeleteGitLabIssue)
 	}
 
+	// Добавляем маршрут для обработки callback'а
 	// User routes
 	router.GET("/api/users", app.oauthHandler.GetUsersHandler)
 
