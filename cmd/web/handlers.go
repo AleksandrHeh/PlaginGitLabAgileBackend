@@ -1869,3 +1869,92 @@ func (app *application) deleteSprintIssue(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "Sprint issue deleted successfully"})
 }
+
+type UpdateSprintRequest struct {
+	Title     string    `json:"title"`
+	StartDate time.Time `json:"start_date"`
+	EndDate   time.Time `json:"end_date"`
+	Goals     string    `json:"goals"`
+}
+
+// updateSprint обрабатывает запрос на обновление спринта
+func (app *application) updateSprint(c *gin.Context) {
+	sprintID, err := strconv.Atoi(c.Param("sprintId"))
+	if err != nil {
+		app.errorLog.Printf("Неверный формат ID спринта: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID спринта"})
+		return
+	}
+
+	// Проверяем существование спринта
+	_, err = app.models.GetSprint(sprintID)
+	if err != nil {
+		app.errorLog.Printf("Ошибка получения спринта: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Спринт не найден"})
+		return
+	}
+
+	var req UpdateSprintRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		app.errorLog.Printf("Ошибка парсинга JSON: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат данных"})
+		return
+	}
+
+	// Обновляем спринт
+	err = app.models.UpdateSprint(sprintID, req.Title, req.StartDate, req.EndDate, req.Goals)
+	if err != nil {
+		app.errorLog.Printf("Ошибка обновления спринта: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Не удалось обновить спринт"})
+		return
+	}
+
+	// Получаем обновленный спринт
+	updatedSprint, err := app.models.GetSprint(sprintID)
+	if err != nil {
+		app.errorLog.Printf("Ошибка получения обновленного спринта: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Спринт обновлен, но не удалось получить обновленные данные"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Спринт успешно обновлен",
+		"sprint":  updatedSprint,
+	})
+}
+
+// deleteSprint обрабатывает запрос на удаление спринта
+func (app *application) deleteSprint(c *gin.Context) {
+	sprintID, err := strconv.Atoi(c.Param("sprintId"))
+	if err != nil {
+		app.errorLog.Printf("Неверный формат ID спринта: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID спринта"})
+		return
+	}
+
+	// Проверяем существование спринта
+	sprint, err := app.models.GetSprint(sprintID)
+	if err != nil {
+		app.errorLog.Printf("Ошибка получения спринта: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Спринт не найден"})
+		return
+	}
+
+	// Проверяем, не завершен ли спринт
+	if sprint.SptStatus == "completed" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Нельзя удалить завершенный спринт"})
+		return
+	}
+
+	// Удаляем спринт
+	err = app.models.DeleteSprint(sprintID)
+	if err != nil {
+		app.errorLog.Printf("Ошибка удаления спринта: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Не удалось удалить спринт"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Спринт успешно удален",
+	})
+}

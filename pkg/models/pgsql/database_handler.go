@@ -715,3 +715,49 @@ func (pl *PullIncludes) DeleteSprintIssue(sprintID, issueID int) error {
 	
 	return nil
 }
+
+// UpdateSprint обновляет данные спринта
+func (pl *PullIncludes) UpdateSprint(sprintID int, title string, startDate, endDate time.Time, goals string) error {
+	query := `
+		UPDATE sprint 
+		SET spt_title = $1, spt_start_date = $2, spt_end_date = $3, spt_goals = $4
+		WHERE spt_id = $5
+	`
+	_, err := pl.DB.Exec(context.Background(), query, title, startDate, endDate, goals, sprintID)
+	return err
+}
+
+// DeleteSprint удаляет спринт
+func (pl *PullIncludes) DeleteSprint(sprintID int) error {
+	// Начинаем транзакцию
+	tx, err := pl.DB.Begin(context.Background())
+	if err != nil {
+		return fmt.Errorf("ошибка начала транзакции: %w", err)
+	}
+	defer tx.Rollback(context.Background())
+
+	// Сначала удаляем все задачи спринта
+	_, err = tx.Exec(context.Background(), `
+		DELETE FROM sprint_issues 
+		WHERE si_sprint_id = $1
+	`, sprintID)
+	if err != nil {
+		return fmt.Errorf("ошибка удаления задач спринта: %w", err)
+	}
+
+	// Затем удаляем сам спринт
+	_, err = tx.Exec(context.Background(), `
+		DELETE FROM sprint 
+		WHERE spt_id = $1
+	`, sprintID)
+	if err != nil {
+		return fmt.Errorf("ошибка удаления спринта: %w", err)
+	}
+
+	// Завершаем транзакцию
+	if err = tx.Commit(context.Background()); err != nil {
+		return fmt.Errorf("ошибка завершения транзакции: %w", err)
+	}
+
+	return nil
+}

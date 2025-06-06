@@ -114,19 +114,22 @@ func (app *application) routes() *gin.Engine {
 
 	// Маршруты для проектов
 	router.POST("/api/projects", app.oauthHandler.SaveProjectMetadata)
-	router.GET("/api/projects/:id/sprints", app.getSprints)
-	router.POST("/api/projects/:id/sprints", app.createSprint)
-	router.GET("/api/projects/:id/sprints/:sprintId", app.getSprint)
-	router.GET("/api/projects/:id/sprints/:sprintId/issues", app.getSprintIssues)
-	router.GET("/api/projects/:id/sprints/:sprintId/issues/:taskId", app.getSprintIssue)
-	router.POST("/api/projects/:id/sprints/:sprintId/issues", app.addIssueToSprint)
-	router.PUT("/api/projects/:id/sprints/:sprintId/issues/assignee", app.updateIssueAssignee)
-	router.PUT("/api/projects/:id/sprints/:sprintId/complete", app.completeSprint)
 
-	// Sprint routes
-	sprintRoutes := router.Group("/api/projects/:projectID/sprints/:sprintID")
+	// Маршруты для спринтов
+	sprints := router.Group("/api/projects/:id/sprints")
 	{
-		sprintRoutes.DELETE("/issues/:issueID", app.deleteSprintIssue)
+		sprints.GET("", app.getSprints)
+		sprints.POST("", app.createSprint)
+		sprints.GET("/:sprintId", app.getSprint)
+		sprints.PUT("/:sprintId", app.updateSprint)
+		sprints.DELETE("/:sprintId", app.deleteSprint)
+		sprints.POST("/:sprintId/complete", app.completeSprint)
+		sprints.GET("/:sprintId/issues", app.getSprintIssues)
+		sprints.POST("/:sprintId/issues", app.addIssueToSprint)
+		sprints.GET("/:sprintId/issues/:taskId", app.getSprintIssue)
+		sprints.PUT("/:sprintId/issues/:taskId/assignee", app.updateIssueAssignee)
+		sprints.PUT("/:sprintId/issues/:taskId/status", app.updateIssueStatus)
+		sprints.DELETE("/:sprintId/issues/:taskId", app.deleteSprintIssue)
 	}
 
 	// Маршрут для GitLab вебхуков
