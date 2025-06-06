@@ -44,7 +44,7 @@ func main() {
 		clientID:      "9feaef0a6c56d9765985fa701db9c1dfd332389c865c44baa94b916d6b080712",
 		clientSecret:  "gloas-22f4423835a6b9d937ec329fb9496e4e6f1bef96205d7a03bcb9bec59b4779ca",
 		redirectURI:   "http://localhost:8080/oauth/callback",
-		gitlabBaseURL: "http://localhost",
+		gitlabBaseURL: "http://localhost:80",
 		app:           app,
 	}
 

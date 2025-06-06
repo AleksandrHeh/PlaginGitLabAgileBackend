@@ -37,7 +37,7 @@ type OAuthHandler struct {
 func (h *OAuthHandler) GitLabAuthHandler(c *gin.Context) {
 	authURL := fmt.Sprintf(
 		"%s/oauth/authorize?client_id=%s&redirect_uri=%s&response_type=code&scope=api+read_api",
-		h.gitlabBaseURL, h.clientID, url.QueryEscape(h.redirectURI),
+		h.gitlabBaseURL, h.clientID, url.QueryEscape("http://localhost:8080/oauth/callback"),
 	)
 	fmt.Println("Redirect URI:", authURL)
 	c.Redirect(http.StatusTemporaryRedirect, authURL)
@@ -764,6 +764,10 @@ func (app *application) HandleGitLabWebhook(c *gin.Context) {
 		}
 	case "merge_request":
 		app.infoLog.Printf("Обработка merge request события: %s", webhook.ObjectAttributes.State)
+		app.infoLog.Printf("Merge Request данные: ID=%d, Title=%s, Description=%s", 
+			webhook.ObjectAttributes.IID,
+			webhook.ObjectAttributes.Title,
+			webhook.ObjectAttributes.Description)
 		if err := app.handleGitLabMergeRequest(webhook); err != nil {
 			app.errorLog.Printf("Ошибка обработки merge request события: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -824,7 +828,13 @@ func (app *application) handleGitLabPush(webhook GitLabWebhookRequest) error {
 
 	for _, commit := range webhook.Commits {
 		app.infoLog.Printf("Обработка коммита: %s, сообщение: %s", commit.ID, commit.Message)
-		
+
+		// Пропускаем мердж-коммиты, они обрабатываются в handleGitLabMergeRequest
+		if strings.HasPrefix(commit.Message, "Merge branch ") {
+			app.infoLog.Printf("Пропускаем мердж-коммит, он будет обработан в handleGitLabMergeRequest")
+			continue
+		}
+
 		// Извлекаем номер задачи из сообщения коммита
 		issueID := extractIssueIDFromCommitMessage(commit.Message)
 		if issueID == 0 {
@@ -841,7 +851,22 @@ func (app *application) handleGitLabPush(webhook GitLabWebhookRequest) error {
 			continue
 		}
 
-		app.infoLog.Printf("Обновление статуса задачи %d в спринте %d", issueID, sprintID)
+		// Получаем текущий статус задачи
+		issue, err := app.models.GetSprintIssue(sprintID, issueID)
+		if err != nil {
+			app.errorLog.Printf("Ошибка получения статуса задачи %d: %v", issueID, err)
+			continue
+		}
+
+		// Если задача уже в статусе "Готово", не меняем статус
+		if issue.Status == "Готово" {
+			app.infoLog.Printf("Задача %d уже в статусе 'Готово', пропускаем обновление", issueID)
+			continue
+		}
+
+		// Устанавливаем статус "На проверке" для обычных коммитов
+		newStatus := "На проверке"
+		app.infoLog.Printf("Обновление статуса задачи %d на '%s'", issueID, newStatus)
 
 		// Парсим время коммита из строки ISO 8601
 		commitTime, err := time.Parse(time.RFC3339, commit.Timestamp)
@@ -850,22 +875,22 @@ func (app *application) handleGitLabPush(webhook GitLabWebhookRequest) error {
 			commitTime = time.Now() // Используем текущее время как запасной вариант
 		}
 
-		// Обновляем статус задачи
+		// Обновляем статус задачи в базе данных
 		err = app.models.UpdateSprintIssueStatus(
 			sprintID,
 			issueID,
-			"На проверке",
+			newStatus,
 			&commitTime,
-			nil,
-			"main", // Используем main как ветку по умолчанию
-			nil,
+			nil, // lastMerge не применимо в push event
+			"", // branchName не всегда очевиден для мердж коммита в этом контексте
+			nil, // mrID не применимо в push event
 		)
 		if err != nil {
-			app.errorLog.Printf("Ошибка обновления статуса задачи: %v", err)
+			app.errorLog.Printf("Ошибка обновления статуса задачи %d: %v", issueID, err)
 			continue
 		}
 
-		app.infoLog.Printf("Статус задачи %d успешно обновлен", issueID)
+		app.infoLog.Printf("Статус задачи %d в спринте %d успешно обновлен на '%s'", issueID, sprintID, newStatus)
 	}
 
 	return nil
@@ -943,18 +968,13 @@ func (app *application) handleGitLabMergeRequest(webhook GitLabWebhookRequest) e
 	// Проверяем состояние мердж-реквеста
 	switch webhook.ObjectAttributes.State {
 	case "merged":
-		// Парсим время обновления из строки ISO 8601
-		updatedAt, err := time.Parse(time.RFC3339, webhook.ObjectAttributes.UpdatedAt)
-		if err != nil {
-			app.errorLog.Printf("Ошибка парсинга времени обновления: %v (время: %s)", err, webhook.ObjectAttributes.UpdatedAt)
-			updatedAt = time.Now()
-		}
+		updatedAt := time.Now()
 
 		app.infoLog.Printf("Мердж-реквест слит, обновляем статус задачи на 'Готово' (время: %v)", updatedAt)
 		err = app.models.UpdateSprintIssueStatus(
 			sprintID,
 			issueID,
-			"Готово", // Явно указываем статус
+			"Готово",
 			nil,
 			&updatedAt,
 			webhook.ObjectAttributes.SourceBranch,
@@ -971,7 +991,7 @@ func (app *application) handleGitLabMergeRequest(webhook GitLabWebhookRequest) e
 		err = app.models.UpdateSprintIssueStatus(
 			sprintID,
 			issueID,
-			"На проверке", // Явно указываем статус
+			"На проверке",
 			nil,
 			nil,
 			webhook.ObjectAttributes.SourceBranch,
